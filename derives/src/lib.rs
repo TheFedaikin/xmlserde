@@ -3,6 +3,7 @@ extern crate quote;
 
 mod container;
 mod de;
+mod enumeration;
 mod ser;
 mod symbol;
 
@@ -21,4 +22,13 @@ pub fn derive_xml_deserialize(input: TokenStream) -> TokenStream {
 pub fn derive_xml_serialize(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     get_ser_impl_block(input).into()
+}
+
+#[proc_macro_derive(XmlSerdeEnum, attributes(xmlserde))]
+pub fn derive_xml_serde_enum(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match enumeration::get_xml_serde_enum_impl_block(input) {
+        | Ok(ts) => ts.into(),
+        | Err(err) => err.to_compile_error().into(),
+    }
 }

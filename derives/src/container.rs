@@ -135,16 +135,14 @@ impl<'a> FieldsSummary<'a> {
             untagged_enums: vec![],
             untagged_structs: vec![],
         };
-        fields.into_iter().for_each(|f| {
-            match f.ty {
-                | EleType::Attr => result.attrs.push(f),
-                | EleType::Child => result.children.push(f),
-                | EleType::Text => result.text = Some(f),
-                | EleType::SelfClosedChild => result.self_closed_children.push(f),
-                | EleType::Untag => result.untagged_enums.push(f),
-                | EleType::UntaggedEnum => result.untagged_enums.push(f),
-                | EleType::UntaggedStruct => result.untagged_structs.push(f),
-            }
+        fields.into_iter().for_each(|f| match f.ty {
+            | EleType::Attr => result.attrs.push(f),
+            | EleType::Child => result.children.push(f),
+            | EleType::Text => result.text = Some(f),
+            | EleType::SelfClosedChild => result.self_closed_children.push(f),
+            | EleType::Untag => result.untagged_enums.push(f),
+            | EleType::UntaggedEnum => result.untagged_enums.push(f),
+            | EleType::UntaggedStruct => result.untagged_structs.push(f),
         });
         result
     }

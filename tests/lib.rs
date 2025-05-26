@@ -2,21 +2,29 @@
 mod tests {
 
     use xmlserde::{xml_deserialize_from_str, xml_serialize, Unparsed, XmlValue};
-    use xmlserde::{xml_serde_enum, XmlDeserialize, XmlSerialize};
-    use xmlserde_derives::{XmlDeserialize, XmlSerialize};
+    use xmlserde_derives::{XmlDeserialize, XmlSerdeEnum, XmlSerialize};
 
     #[test]
     fn xml_serde_enum_test() {
-        xml_serde_enum! {
-            T {
-                A => "a",
-                B => "b",
-                C => "c",
-            }
+        #[derive(XmlSerdeEnum)]
+        enum T {
+            #[xmlserde(rename = "a")]
+            A,
+            #[xmlserde(rename = "b")]
+            B,
+            #[xmlserde(rename = "c")]
+            C,
+            #[xmlserde(other)]
+            Other(String),
         }
 
         assert!(matches!(T::deserialize("c"), Ok(T::C)));
         assert!(matches!(T::deserialize("b"), Ok(T::B)));
+        assert!(matches!(T::deserialize("a"), Ok(T::A)));
+        assert!(matches!(
+            T::deserialize("d2"),
+            Ok(T::Other(x)) if x == "d2"
+        ));
         assert_eq!((T::A).serialize(), "a");
     }
 
@@ -39,7 +47,7 @@ mod tests {
         #[derive(Default)]
         struct Properties(Vec<Property>);
 
-        impl XmlDeserialize for Properties {
+        impl xmlserde::XmlDeserialize for Properties {
             fn deserialize<B: std::io::prelude::BufRead>(
                 tag: &[u8],
                 reader: &mut xmlserde::quick_xml::Reader<B>,
@@ -561,13 +569,13 @@ mod tests {
     fn test_generics() {
         #[derive(Debug, XmlSerialize, XmlDeserialize)]
         #[xmlserde(root = b"Root")]
-        pub struct Root<T: XmlSerialize + XmlDeserialize> {
+        pub struct Root<T: xmlserde::XmlSerialize + xmlserde::XmlDeserialize> {
             #[xmlserde(ty = "untag")]
             pub dummy: Option<T>,
         }
 
         #[derive(XmlSerialize)]
-        pub enum EnumB<T: XmlSerialize> {
+        pub enum EnumB<T: xmlserde::XmlSerialize> {
             #[xmlserde(name = b"a")]
             #[allow(dead_code)]
             A1(T),
@@ -747,7 +755,7 @@ mod tests {
     fn test_issue_52() {
         #[derive(XmlSerialize)]
         #[xmlserde(root = b"root")]
-        struct Wrapper<T: XmlSerialize> {
+        struct Wrapper<T: xmlserde::XmlSerialize> {
             #[xmlserde(name = b"header", ty = "attr")]
             header: String,
             #[xmlserde(ty = "untag")]
