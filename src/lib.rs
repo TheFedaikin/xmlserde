@@ -35,8 +35,8 @@
 //!     pub name: String,
 //! }
 //! ```
-//! In `xmlserde`, you need to declare clearly that which tag and which type you are going to `serde`.
-//! Notice that it is a binary string for the `name`.
+//! In `xmlserde`, you need to declare clearly that which tag and which type you are going to
+//! `serde`. Notice that it is a binary string for the `name`.
 //!
 //! # Serialize
 //! As for serializing, you need to derive the `XmlSerialize`.
@@ -85,8 +85,12 @@
 //!
 //! # Attributes
 //! - name: the tag of the XML element.
-//! - vec_size: creating a vector with the given capacity before deserilizing a element lists. `vec_size=4` or if your initial capacity is defined in an attr, you can use like this `vec_size="cnt"`.
-//! - default: assigning a parameter-free function to create a default value for a certain field. Notice that it requires the type of this value impls `Eq` and it will skip serializing when the value equals to the default one.
+//! - vec_size: creating a vector with the given capacity before deserilizing a element lists.
+//!   `vec_size=4` or if your initial capacity is defined in an attr, you can use like this
+//!   `vec_size="cnt"`.
+//! - default: assigning a parameter-free function to create a default value for a certain field.
+//!   Notice that it requires the type of this value impls `Eq` and it will skip serializing when
+//!   the value equals to the default one.
 //! - untag: see the `Enum` above.
 //!
 //! # Examples
@@ -113,12 +117,41 @@
 ///     Female,
 /// }
 /// ```
-/// And string value of `male` will be deserialized as `Gender::Male` while `female` will be as `Gender::Female`.
-/// In the same way, `Gender` will be serialized as `male` of `female`.
+/// And string value of `male` will be deserialized as `Gender::Male` while `female` will be as
+/// `Gender::Female`. In the same way, `Gender` will be serialized as `male` of `female`.
 ///
 /// Panic if the given string is out of `male` and `female`.
 #[macro_export]
 macro_rules! xml_serde_enum {
+    (
+        $(#[$outer:meta])*
+        $name:ident {
+            $($f:ident => $s:literal,)*
+            _ => $other_ident:ident($other_ty:ty),
+        }
+    ) => {
+        #[warn(dead_code)]
+        $(#[$outer])*
+        pub enum $name {
+            $($f,)*
+            $other_ident($other_ty),
+        }
+
+        impl xmlserde::XmlValue for $name {
+            fn serialize(&self) -> String {
+                match &self {
+                    $(Self::$f => String::from($s),)*
+                    Self::$other_ident(s_val) => s_val.clone(), // Assuming the Other variant holds the string directly
+                }
+            }
+            fn deserialize(s: &str) -> Result<Self, String> {
+                match s {
+                    $($s => Ok(Self::$f),)*
+                    _ => Ok(Self::$other_ident(s.to_string())),
+                }
+            }
+        }
+    };
     (
          $(#[$outer:meta])*
         $name:ident {
@@ -140,7 +173,7 @@ macro_rules! xml_serde_enum {
             fn deserialize(s: &str) -> Result<Self, String> {
                 match s {
                     $($s => Ok(Self::$f),)*
-                    _ => Err(String::from("")),
+                    _ => Err(format!("Unknown value: {}", s)),
                 }
             }
         }
@@ -156,7 +189,6 @@ use std::{
 // it easily. In this way users don't need to import the `quick-xml` on
 // their own.
 pub use quick_xml;
-
 use quick_xml::events::Event;
 
 pub trait XmlSerialize {
@@ -168,9 +200,8 @@ pub trait XmlSerialize {
 
 impl<T: XmlSerialize> XmlSerialize for Option<T> {
     fn serialize<W: Write>(&self, tag: &[u8], writer: &mut quick_xml::Writer<W>) {
-        match self {
-            Some(t) => t.serialize(tag, writer),
-            None => {}
+        if let Some(t) = self {
+            t.serialize(tag, writer)
         }
     }
 }
@@ -178,7 +209,7 @@ impl<T: XmlSerialize> XmlSerialize for Option<T> {
 impl<T: XmlSerialize> XmlSerialize for Vec<T> {
     fn serialize<W: Write>(&self, tag: &[u8], writer: &mut quick_xml::Writer<W>) {
         self.iter().for_each(|c| {
-            let _ = c.serialize(tag, writer);
+            c.serialize(tag, writer);
         });
     }
 }
@@ -205,17 +236,17 @@ pub trait XmlDeserialize: Sized {
     ///
     /// For a outside struct, it doesn't
     /// know how to deal with an untag type. The current solution is to treat them as `Unparsed`
-    /// types first, and then pass them into this function to deserialize. Since the type is untagged,
-    /// it doesn't require the attributes.
+    /// types first, and then pass them into this function to deserialize. Since the type is
+    /// untagged, it doesn't require the attributes.
     fn __deserialize_from_unparsed_array(_array: Vec<(&'static [u8], Unparsed)>) -> Self {
         unreachable!("untagged types require having `child` types only")
     }
 
     /// A helper function for handling the untagged types.
     ///
-    /// For efficiency, deserializing enums has no need to handle the untagged types by `__deserialize_from_unparsed_array` method.
-    /// But we have no idea of whether this field is not enum or not, we make a helper function to discern it
-    /// in the runtime.
+    /// For efficiency, deserializing enums has no need to handle the untagged types by
+    /// `__deserialize_from_unparsed_array` method. But we have no idea of whether this field is
+    /// not enum or not, we make a helper function to discern it in the runtime.
     fn __is_enum() -> bool {
         false
     }
@@ -260,7 +291,7 @@ impl XmlSerialize for Unparsed {
             let v = v as &str;
             start.push_attribute((k, v));
         });
-        if self.data.len() > 0 {
+        if !self.data.is_empty() {
             let _ = writer.write_event(Event::Start(start));
             self.data.iter().for_each(|e| {
                 let _ = writer.write_event(e.clone());
@@ -299,10 +330,10 @@ impl XmlDeserialize for Unparsed {
         }
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::End(e)) if e.name().into_inner() == tag => break,
-                Ok(Event::Eof) => break,
-                Err(_) => break,
-                Ok(e) => data.push(e.into_owned()),
+                | Ok(Event::End(e)) if e.name().into_inner() == tag => break,
+                | Ok(Event::Eof) => break,
+                | Err(_) => break,
+                | Ok(e) => data.push(e.into_owned()),
             }
         }
         Unparsed {
@@ -396,26 +427,26 @@ where
     let mut buf = Vec::<u8>::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(start)) => {
+            | Ok(Event::Start(start)) => {
                 if start.name().into_inner() == root {
                     let result = T::deserialize(root, &mut reader, start.attributes(), false);
                     return Ok(result);
                 }
-            }
-            Ok(Event::Empty(start)) => {
+            },
+            | Ok(Event::Empty(start)) => {
                 if start.name().into_inner() == root {
                     let result = T::deserialize(root, &mut reader, start.attributes(), true);
                     return Ok(result);
                 }
-            }
-            Ok(Event::Eof) => {
+            },
+            | Ok(Event::Eof) => {
                 return Err(format!(
                     "Cannot find the element: {}",
                     String::from_utf8(root.to_vec()).unwrap()
                 ))
-            }
-            Err(e) => return Err(e.to_string()),
-            _ => {}
+            },
+            | Err(e) => return Err(e.to_string()),
+            | _ => {},
         }
     }
 }
@@ -486,8 +517,8 @@ macro_rules! impl_xml_value_for_num {
             fn deserialize(s: &str) -> Result<Self, String> {
                 let r = s.parse::<$num>();
                 match r {
-                    Ok(f) => Ok(f),
-                    Err(e) => Err(e.to_string()),
+                    | Ok(f) => Ok(f),
+                    | Err(e) => Err(e.to_string()),
                 }
             }
         }
