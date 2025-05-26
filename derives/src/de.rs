@@ -20,13 +20,25 @@ pub fn get_de_enum_impl_block(container: Container) -> proc_macro2::TokenStream 
                     return quote! {};
                 }
                 let name = v.name.as_ref().expect("should have name");
-                let ty = v.ty;
+                let ty_opt = v.ty;
                 let ident = v.ident;
-                if let Some(ty) = ty {
-                    quote! {
-                        #name => {
-                            let _r = #ty::deserialize(#name, reader, $attrs, $b);
-                            return Self::#ident(_r);
+                if let Some(field_ty) = ty_opt {
+                    let generic_info = crate::container::get_generics(field_ty);
+
+                    if generic_info.is_boxed() {
+                        let inner_ty = generic_info.get_boxed().expect("Boxed type should have an inner type");
+                        quote! {
+                            #name => {
+                                let _r = <#inner_ty as ::xmlserde::XmlDeserialize>::deserialize(#name, reader, $attrs, $b);
+                                return Self::#ident(Box::new(_r));
+                            }
+                        }
+                    } else {
+                        quote! {
+                            #name => {
+                                let _r = <#field_ty as ::xmlserde::XmlDeserialize>::deserialize(#name, reader, $attrs, $b);
+                                return Self::#ident(_r);
+                            }
                         }
                     }
                 } else {
@@ -149,6 +161,7 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
             let ty = match &f.generic {
                 | Generic::Vec(t) => t,
                 | Generic::Opt(t) => t,
+                | Generic::Boxed(t) => t,
                 | Generic::None => &f.original.ty,
             };
             quote! {#ty::__get_children_tags()}
@@ -273,6 +286,11 @@ fn get_untagged_struct_fields_result(fileds: &[StructField]) -> proc_macro2::Tok
               #ident = Some(#_t::__deserialize_from_unparsed_array(#ident_opt_unparsed_array));
           }
       },
+      | Generic::Boxed(inner_ty) => quote! {
+          if #ident_unparsed_array.len() > 0 {
+              #ident = Some(Box::new(#inner_ty::__deserialize_from_unparsed_array(#ident_unparsed_array)));
+          }
+      },
       | Generic::None => quote! {
           if #ident_unparsed_array.len() > 0 {
               #ident = Some(#ty::__deserialize_from_unparsed_array(#ident_unparsed_array));
@@ -340,6 +358,11 @@ fn get_fields_init(fields: &FieldsSummary) -> proc_macro2::TokenStream {
                             let mut #ident = Option::<#opt>::None;
                         }
                     },
+                    | Generic::Boxed(inner_ty) => {
+                        quote! {
+                            let mut #ident = Option::<Box<#inner_ty>>::None;
+                        }
+                    },
                     | Generic::None => {
                         quote! {
                             let mut #ident = Option::<#ty>::None;
@@ -355,6 +378,7 @@ fn get_fields_init(fields: &FieldsSummary) -> proc_macro2::TokenStream {
             let ty = match f.generic {
                 | Generic::Vec(_) => panic!("text element should not be Vec<T>"),
                 | Generic::Opt(t) => t,
+                | Generic::Boxed(t) => t,
                 | Generic::None => &f.original.ty,
             };
             // let ty = &f.original.ty;
@@ -398,6 +422,11 @@ fn get_fields_init(fields: &FieldsSummary) -> proc_macro2::TokenStream {
                     let mut #ident = Option::<#t>::None;
                 }
             },
+            | Generic::Boxed(inner_ty) => {
+                quote! {
+                    let mut #ident = Option::<Box<#inner_ty>>::None;
+                }
+            },
             | Generic::None => {
                 quote! {
                     let mut #ident = Option::<#ty>::None;
@@ -425,6 +454,12 @@ fn get_fields_init(fields: &FieldsSummary) -> proc_macro2::TokenStream {
                 quote! {
                     let mut #ident = Option::<#t>::None;
                     let mut #ident_opt_unparsed_array = Vec::new();
+                }
+            },
+            | Generic::Boxed(inner_ty) => {
+                quote! {
+                    let mut #ident = Option::<Box<#inner_ty>>::None;
+                    let mut #ident_unparsed_array = Vec::new();
                 }
             },
             | Generic::None => {
@@ -456,6 +491,7 @@ fn get_deserialize_from_unparsed(children: &[StructField]) -> proc_macro2::Token
         match &c.generic {
             | Generic::Vec(_) => quote! {let mut #ident = vec![];},
             | Generic::Opt(_) => quote! {let mut #ident = None;},
+            | Generic::Boxed(_) => quote! {let mut #ident = None;},
             | Generic::None => quote! {let mut #ident = None;},
         }
     });
@@ -478,6 +514,13 @@ fn get_deserialize_from_unparsed(children: &[StructField]) -> proc_macro2::Token
                 quote! {
                     #name => {
                         #ident = Some(content.deserialize_to::<#t>().unwrap());
+                    }
+                }
+            },
+            | Generic::Boxed(t) => {
+                quote! {
+                    #name => {
+                        #ident = Some(Box::new(content.deserialize_to::<#t>().unwrap()));
                     }
                 }
             },
@@ -643,6 +686,7 @@ fn text_match_branch(field: StructField) -> proc_macro2::TokenStream {
     let (t, is_opt) = match field.generic {
         | Generic::Vec(_) => panic!("text element should not be Vec<T>"),
         | Generic::Opt(ty) => (ty, true),
+        | Generic::Boxed(t) => (t, true),
         | Generic::None => (&field.original.ty, false),
     };
     let tt = if field.is_required() || is_opt {
@@ -691,6 +735,13 @@ fn untag_text_enum_branches(untags: &[StructField]) -> proc_macro2::TokenStream 
                     }
                 }
             },
+            | Generic::Boxed(inner_ty) => {
+                quote! {
+                    if let Some(t) = #inner_ty::__deserialize_from_text(&_str) {
+                        #ident = Some(Box::new(t));
+                    }
+                }
+            },
             | Generic::None => {
                 quote! {
                     if let Some(t) = #ty::__deserialize_from_text(&_str) {
@@ -725,6 +776,13 @@ fn untag_enums_match_branch(fields: &[StructField]) -> proc_macro2::TokenStream 
                 quote! {
                     _ty if #ty::__get_children_tags().contains(&_ty) => {
                         #ident = Some(#ty::deserialize(_ty, reader, s.attributes(), is_empty));
+                    }
+                }
+            },
+            | Generic::Boxed(inner_ty) => {
+                quote! {
+                    _ty if #inner_ty::__get_children_tags().contains(&_ty) => {
+                        #ident = Some(Box::new(#inner_ty::deserialize(_ty, reader, s.attributes(), is_empty)));
                     }
                 }
             },
@@ -763,6 +821,14 @@ fn untag_structs_match_branch(fields: &[StructField]) -> proc_macro2::TokenStrea
               let _tags = #t::__get_children_tags();
               let idx = _tags.binary_search(&_t).unwrap();
               #ident_opt_unparsed_array.push((_tags[idx], _r));
+          }
+      },
+      | Generic::Boxed(inner_ty) => quote! {
+          _t if #inner_ty::__get_children_tags().contains(&_t) => {
+              let _r = ::xmlserde::Unparsed::deserialize(_t, reader, s.attributes(), is_empty);
+              let _tags = #inner_ty::__get_children_tags();
+              let idx = _tags.binary_search(&_t).unwrap();
+              #ident_unparsed_array.push((_tags[idx], _r));
           }
       },
       | Generic::None => quote! {
@@ -811,6 +877,14 @@ fn children_match_branch(
                     #tag => {
                         let __f = #opt_ty::deserialize(#tag, reader, s.attributes(), is_empty);
                         #ident = Some(__f);
+                    },
+                }
+            },
+            | Generic::Boxed(inner_ty) => {
+                quote! {
+                    #tag => {
+                        let __f = #inner_ty::deserialize(#tag, reader, s.attributes(), is_empty);
+                        #ident = Some(Box::new(__f));
                     },
                 }
             },

@@ -194,8 +194,8 @@ impl<'a> StructField<'a> {
                             | "child" => EleType::Child,
                             | "text" => EleType::Text,
                             | "sfc" => EleType::SelfClosedChild,
-                            | "untag" => EleType::Untag, /* todo: generate a deprecate function
-                                                           * to let users know */
+                            | "untag" => EleType::Untag, /* todo: generate a deprecate function */
+                            // to let users know
                             | "untagged_enum" => EleType::UntaggedEnum,
                             | "untagged_struct" => EleType::UntaggedStruct,
                             | _ => panic!("invalid type"),
@@ -244,6 +244,7 @@ impl<'a> StructField<'a> {
             return match self.generic {
                 | Generic::Vec(_) => false,
                 | Generic::Opt(_) => false,
+                | Generic::Boxed(_) => false,
                 | Generic::None => true,
             };
         }
@@ -399,7 +400,7 @@ fn respan_token(mut token: TokenTree, span: Span) -> TokenTree {
     token
 }
 
-fn get_generics(t: &syn::Type) -> Generic {
+pub(crate) fn get_generics(t: &syn::Type) -> Generic {
     match t {
         | syn::Type::Path(p) => {
             let path = &p.path;
@@ -433,6 +434,20 @@ fn get_generics(t: &syn::Type) -> Generic {
                             },
                             | _ => Generic::None,
                         }
+                    } else if seg.ident == "Box" {
+                        match &seg.arguments {
+                            | syn::PathArguments::AngleBracketed(a) => {
+                                let args = &a.args;
+                                if args.len() != 1 {
+                                    Generic::None
+                                } else if let Some(syn::GenericArgument::Type(t)) = args.first() {
+                                    Generic::Boxed(t)
+                                } else {
+                                    Generic::None
+                                }
+                            },
+                            | _ => Generic::None,
+                        }
                     } else {
                         Generic::None
                     }
@@ -447,6 +462,7 @@ fn get_generics(t: &syn::Type) -> Generic {
 pub enum Generic<'a> {
     Vec(&'a syn::Type),
     Opt(&'a syn::Type),
+    Boxed(&'a syn::Type),
     None,
 }
 
@@ -465,6 +481,13 @@ impl Generic<'_> {
         }
     }
 
+    pub fn is_boxed(&self) -> bool {
+        match self {
+            | Generic::Boxed(_) => true,
+            | _ => false,
+        }
+    }
+
     pub fn get_vec(&self) -> Option<&syn::Type> {
         match self {
             | Generic::Vec(v) => Some(v),
@@ -475,6 +498,13 @@ impl Generic<'_> {
     pub fn get_opt(&self) -> Option<&syn::Type> {
         match self {
             | Generic::Opt(v) => Some(v),
+            | _ => None,
+        }
+    }
+
+    pub fn get_boxed(&self) -> Option<&syn::Type> {
+        match self {
+            | Generic::Boxed(v) => Some(v),
             | _ => None,
         }
     }

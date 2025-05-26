@@ -34,23 +34,49 @@ fn get_ser_enum_impl_block(container: Container) -> proc_macro2::TokenStream {
                 }
             }
         } else if matches!(ele_ty, EleType::Text) {
-            quote!{
-                Self::#f(c) => {
-                    let _ = writer.write_event(Event::Text(BytesText::new(&c.serialize())));
+            let field_ty = v.ty.expect("text variant should have a type");
+            let generic_info = crate::container::get_generics(field_ty);
+            if generic_info.is_boxed() {
+                quote!{
+                    Self::#f(c) => {
+                        let _ = writer.write_event(Event::Text(BytesText::new(&(**c).serialize())));
+                    }
+                }
+            } else {
+                quote!{
+                    Self::#f(c) => {
+                        let _ = writer.write_event(Event::Text(BytesText::new(&c.serialize())));
+                    }
                 }
             }
         } else {
-            let name = v.name.as_ref().expect("should have hame");
-            quote! {
-                Self::#f(c) => {
-                    if tag == b"" {
-                        c.serialize(#name, writer);
-                    } else {
-                        let _ = writer.write_event(Event::Start(BytesStart::new(String::from_utf8_lossy(tag))));
-                        c.serialize(#name, writer);
-                        let _ = writer.write_event(Event::End(BytesEnd::new(String::from_utf8_lossy(tag))));
-                    }
-                },
+            let name = v.name.as_ref().expect("should have name");
+            let field_ty = v.ty.expect("child variant should have a type");
+            let generic_info = crate::container::get_generics(field_ty);
+            if generic_info.is_boxed() {
+                quote! {
+                    Self::#f(c) => {
+                        if tag == b"" {
+                            (**c).serialize(#name, writer);
+                        } else {
+                            let _ = writer.write_event(Event::Start(BytesStart::new(String::from_utf8_lossy(tag))));
+                            (**c).serialize(#name, writer);
+                            let _ = writer.write_event(Event::End(BytesEnd::new(String::from_utf8_lossy(tag))));
+                        }
+                    },
+                }
+            } else {
+                quote! {
+                    Self::#f(c) => {
+                        if tag == b"" {
+                            c.serialize(#name, writer);
+                        } else {
+                            let _ = writer.write_event(Event::Start(BytesStart::new(String::from_utf8_lossy(tag))));
+                            c.serialize(#name, writer);
+                            let _ = writer.write_event(Event::End(BytesEnd::new(String::from_utf8_lossy(tag))));
+                        }
+                    },
+                }
             }
         }
     });
@@ -123,6 +149,9 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
                     }
                 }
             },
+            | Generic::Boxed(_) => {
+                quote! { panic!("Attributes cannot be of type Box<T>"); }
+            },
             | Generic::None => {
                 match &attr.default {
                     | Some(path) => {
@@ -146,23 +175,51 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
     });
     let write_text_or_children = if let Some(t) = text {
         let ident = t.original.ident.as_ref().unwrap();
-        if t.generic.is_opt() {
-            quote! {
-                match &self.#ident {
-                    None => {},
-                    Some(__d) => {
-                        let r = __d.serialize();
-                        let event = BytesText::new(&r);
-                        writer.write_event(Event::Text(event));
+        match &t.generic {
+            | Generic::Opt(opt_inner_ty) => {
+                let generic_of_opt_inner = crate::container::get_generics(opt_inner_ty);
+                if generic_of_opt_inner.is_boxed() {
+                    quote! {
+                        match &self.#ident {
+                            None => {},
+                            Some(__d) => { // __d is Box<DeepValue>
+                                let r = (*__d).serialize(); // XmlValue::serialize()
+                                let event = BytesText::new(&r);
+                                writer.write_event(Event::Text(event));
+                            }
+                        }
+                    }
+                } else {
+                    // Option<Value>
+                    quote! {
+                        match &self.#ident {
+                            None => {},
+                            Some(__d) => { // __d is Value
+                                let r = __d.serialize(); // XmlValue::serialize()
+                                let event = BytesText::new(&r);
+                                writer.write_event(Event::Text(event));
+                            }
+                        }
                     }
                 }
-            }
-        } else {
-            quote! {
-                let r = self.#ident.serialize();
-                let event = BytesText::new(&r);
-                writer.write_event(Event::Text(event));
-            }
+            },
+            | Generic::Boxed(_boxed_inner_ty) => {
+                // self.#ident is Box<Value>
+                quote! {
+                    let r = (*self.#ident).serialize(); // XmlValue::serialize()
+                    let event = BytesText::new(&r);
+                    writer.write_event(Event::Text(event));
+                }
+            },
+            | Generic::None => {
+                // self.#ident is Value
+                quote! {
+                    let r = self.#ident.serialize(); // XmlValue::serialize()
+                    let event = BytesText::new(&r);
+                    writer.write_event(Event::Text(event));
+                }
+            },
+            | Generic::Vec(_) => panic!("Vec cannot be text content"), // Should not happen
         }
     } else {
         let write_scf = self_closed_children.into_iter().map(|f| {
@@ -181,15 +238,31 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
             } else {
                 let ident = f.original.ident.as_ref().unwrap();
                 let name = f.name.as_ref().expect("should have name");
-                quote! {
-                    self.#ident.serialize(#name, writer);
+                match &f.generic {
+                    | Generic::Boxed(_) => {
+                        // Field is Box<ChildType>
+                        quote! { (*self.#ident).serialize(#name, writer); }
+                    },
+                    | _ => {
+                        // Field is ChildType, Vec<ChildType>, Option<ChildType> -> .serialize will
+                        // handle these For Option<Box<T>>,
+                        // self.#ident.serialize should correctly call option then box's serialize.
+                        quote! { self.#ident.serialize(#name, writer); }
+                    },
                 }
             }
         });
         let write_untags = untags.into_iter().map(|f| {
-            let ident = f.original.ident.as_ref().expect("should have name");
-            quote! {
-                self.#ident.serialize(b"", writer);
+            let ident = f.original.ident.as_ref().expect("should have name"); // This was wrong, ident is f.original.ident...
+                                                                              // let ident = f.original.ident.as_ref().unwrap();
+            match &f.generic {
+                | Generic::Boxed(_) => {
+                    // Field is Box<UntaggedEnum>
+                    quote! { (*self.#ident).serialize(b"", writer); }
+                },
+                | _ => {
+                    quote! { self.#ident.serialize(b"", writer); }
+                },
             }
         });
         quote! {
@@ -265,6 +338,16 @@ fn init_is_empty(
             | Generic::Opt(_) => {
                 quote! {
                     let #ident = self.#ident.is_some();
+                }
+            },
+            | Generic::Boxed(_) => {
+                match &c.default {
+                    | Some(d) => {
+                        quote! {
+                            let #ident = *self.#ident != #d();
+                        }
+                    },
+                    | None => quote! {let #ident = true;},
                 }
             },
             | Generic::None => {
