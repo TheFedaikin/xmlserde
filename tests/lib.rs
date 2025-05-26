@@ -90,12 +90,12 @@ mod tests {
         </font>"#;
         let result = xml_deserialize_from_str::<Font>(xml);
         match result {
-            Ok(f) => {
+            | Ok(f) => {
                 assert_eq!(f.bold, true);
                 assert_eq!(f.italic, true);
                 assert_eq!(f.size, 12.2);
-            }
-            Err(_) => panic!(),
+            },
+            | Err(_) => panic!(),
         }
     }
 
@@ -125,7 +125,7 @@ mod tests {
         </root>"#;
         let result = xml_deserialize_from_str::<Aa>(xml);
         match result {
-            Ok(result) => {
+            | Ok(result) => {
                 assert_eq!(result.f.len(), 2);
                 assert_eq!(result.cnt, 2);
                 let mut child_iter = result.f.into_iter();
@@ -135,8 +135,8 @@ mod tests {
                 let second = child_iter.next().unwrap();
                 assert_eq!(second.age, 9);
                 assert_eq!(second.name, String::from("Jerry"));
-            }
-            Err(_) => panic!(),
+            },
+            | Err(_) => panic!(),
         }
     }
 
@@ -268,8 +268,8 @@ mod tests {
         let xml = r#"<Person age="2"></Person>"#;
         let result = xml_deserialize_from_str::<Person>(xml);
         match result {
-            Ok(p) => assert_eq!(p.age, Some(2)),
-            Err(_) => panic!(),
+            | Ok(p) => assert_eq!(p.age, Some(2)),
+            | Err(_) => panic!(),
         }
     }
 
@@ -289,11 +289,11 @@ mod tests {
         let xml = r#"<Person>Tom</Person>"#;
         let result = xml_deserialize_from_str::<Person>(xml);
         match result {
-            Ok(p) => {
+            | Ok(p) => {
                 assert_eq!(p.age, 12);
                 assert_eq!(p.name, "Tom");
-            }
-            Err(_) => panic!(),
+            },
+            | Err(_) => panic!(),
         }
     }
 
@@ -413,8 +413,8 @@ mod tests {
         let xml = xml_serialize(obj);
         let p = xml_deserialize_from_str::<Child>(&xml).unwrap();
         match p.c {
-            TestEnum::TestA(a) => assert_eq!(a.age, 23),
-            TestEnum::TestB(_) => panic!(),
+            | TestEnum::TestA(a) => assert_eq!(a.age, 23),
+            | TestEnum::TestB(_) => panic!(),
         }
     }
 
@@ -463,8 +463,8 @@ mod tests {
         let xml = r#"<Root><a aAttr="3"/></Root>"#;
         let p = xml_deserialize_from_str::<Root>(&xml).unwrap();
         match p.dummy {
-            EnumA::A1(ref a) => assert_eq!(a.a_attr1, 3),
-            EnumA::B1(_) => panic!(),
+            | EnumA::A1(ref a) => assert_eq!(a.a_attr1, 3),
+            | EnumA::B1(_) => panic!(),
         }
         let ser = xml_serialize(p);
         assert_eq!(xml, &ser);
@@ -534,8 +534,8 @@ mod tests {
         let xml = r#"<Root><a aAttr="3"/></Root>"#;
         let p = xml_deserialize_from_str::<Root>(&xml).unwrap();
         match p.dummy {
-            Some(EnumA::A1(ref a)) => assert_eq!(a.a_attr1, 3),
-            None => panic!(),
+            | Some(EnumA::A1(ref a)) => assert_eq!(a.a_attr1, 3),
+            | None => panic!(),
         }
         let ser = xml_serialize(p);
         assert_eq!(xml, &ser);

@@ -7,10 +7,8 @@ mod ser;
 mod symbol;
 
 use de::get_de_impl_block;
-use ser::get_ser_impl_block;
-
 use proc_macro::TokenStream;
-
+use ser::get_ser_impl_block;
 use syn::{parse_macro_input, DeriveInput};
 
 #[proc_macro_derive(XmlDeserialize, attributes(xmlserde))]

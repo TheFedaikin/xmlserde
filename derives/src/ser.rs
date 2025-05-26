@@ -33,26 +33,24 @@ fn get_ser_enum_impl_block(container: Container) -> proc_macro2::TokenStream {
                     }
                 }
             }
+        } else if matches!(ele_ty, EleType::Text) {
+            quote!{
+                Self::#f(c) => {
+                    let _ = writer.write_event(Event::Text(BytesText::new(&c.serialize())));
+                }
+            }
         } else {
-            if matches!(ele_ty, EleType::Text) {
-                quote!{
-                    Self::#f(c) => {
-                        let _ = writer.write_event(Event::Text(BytesText::new(&c.serialize())));
+            let name = v.name.as_ref().expect("should have hame");
+            quote! {
+                Self::#f(c) => {
+                    if tag == b"" {
+                        c.serialize(#name, writer);
+                    } else {
+                        let _ = writer.write_event(Event::Start(BytesStart::new(String::from_utf8_lossy(tag))));
+                        c.serialize(#name, writer);
+                        let _ = writer.write_event(Event::End(BytesEnd::new(String::from_utf8_lossy(tag))));
                     }
-                }
-            } else {
-                let name = v.name.as_ref().expect("should have hame");
-                quote! {
-                    Self::#f(c) => {
-                        if tag == b"" {
-                            c.serialize(#name, writer);
-                        } else {
-                            let _ = writer.write_event(Event::Start(BytesStart::new(String::from_utf8_lossy(tag))));
-                            c.serialize(#name, writer);
-                            let _ = writer.write_event(Event::End(BytesEnd::new(String::from_utf8_lossy(tag))));
-                        }
-                    },
-                }
+                },
             }
         }
     });
@@ -75,12 +73,14 @@ fn get_ser_enum_impl_block(container: Container) -> proc_macro2::TokenStream {
 
 fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
     let write_ns = match container.with_ns {
-        Some(ns) => quote! {
-            attrs.push(Attribute::from((b"xmlns".as_ref(), #ns.as_ref())));
+        | Some(ns) => {
+            quote! {
+                attrs.push(Attribute::from((b"xmlns".as_ref(), #ns.as_ref())));
+            }
         },
-        None => quote! {},
+        | None => quote! {},
     };
-    let write_custom_ns = if container.custom_ns.len() == 0 {
+    let write_custom_ns = if container.custom_ns.is_empty() {
         quote! {}
     } else {
         let cns = container.custom_ns.into_iter().map(|(ns, value)| {
@@ -100,7 +100,8 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
         untagged_enums: untags,
         untagged_structs: _,
     } = FieldsSummary::from_fields(container.struct_fields);
-    if text.is_some() && (children.len() > 0 || self_closed_children.len() > 0 || untags.len() > 0)
+    if text.is_some()
+        && (!children.is_empty() || !self_closed_children.is_empty() || !untags.is_empty())
     {
         panic!("Cannot have the text and children at the same time.")
     }
@@ -109,8 +110,8 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
         let name = attr.name.as_ref().unwrap();
         let ident = attr.original.ident.as_ref().unwrap();
         match &attr.generic {
-            Generic::Vec(_) => panic!("cannot use a vector in attribute"),
-            Generic::Opt(_) => {
+            | Generic::Vec(_) => panic!("cannot use a vector in attribute"),
+            | Generic::Opt(_) => {
                 quote! {
                     let mut sr: String;
                     match &self.#ident {
@@ -121,19 +122,25 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
                         None => {},
                     }
                 }
-            }
-            Generic::None => match &attr.default {
-                Some(path) => quote! {
-                    let mut ser;
-                    if #path() != self.#ident {
-                        ser = self.#ident.serialize();
-                        attrs.push(Attribute::from((#name.as_ref(), ser.as_bytes())));
-                    }
-                },
-                None => quote! {
-                    let ser = self.#ident.serialize();
-                    attrs.push(Attribute::from((#name.as_ref(), ser.as_bytes())));
-                },
+            },
+            | Generic::None => {
+                match &attr.default {
+                    | Some(path) => {
+                        quote! {
+                            let mut ser;
+                            if #path() != self.#ident {
+                                ser = self.#ident.serialize();
+                                attrs.push(Attribute::from((#name.as_ref(), ser.as_bytes())));
+                            }
+                        }
+                    },
+                    | None => {
+                        quote! {
+                            let ser = self.#ident.serialize();
+                            attrs.push(Attribute::from((#name.as_ref(), ser.as_bytes())));
+                        }
+                    },
+                }
             },
         }
     });
@@ -242,29 +249,37 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
 }
 
 fn init_is_empty(
-    children: &Vec<StructField>,
-    scf: &Vec<StructField>,
-    untags: &Vec<StructField>,
+    children: &[StructField],
+    scf: &[StructField],
+    untags: &[StructField],
     text: &Option<StructField>,
 ) -> proc_macro2::TokenStream {
     let children_init = children.iter().map(|c| {
         let ident = c.original.ident.as_ref().unwrap();
         match &c.generic {
-            Generic::Vec(_) => quote! {
-                let #ident = self.#ident.len() > 0;
+            | Generic::Vec(_) => {
+                quote! {
+                    let #ident = self.#ident.len() > 0;
+                }
             },
-            Generic::Opt(_) => quote! {
-                let #ident = self.#ident.is_some();
+            | Generic::Opt(_) => {
+                quote! {
+                    let #ident = self.#ident.is_some();
+                }
             },
-            Generic::None => match &c.default {
-                Some(d) => quote! {
-                    let #ident = self.#ident != #d();
-                },
-                None => quote! {let #ident = true;},
+            | Generic::None => {
+                match &c.default {
+                    | Some(d) => {
+                        quote! {
+                            let #ident = self.#ident != #d();
+                        }
+                    },
+                    | None => quote! {let #ident = true;},
+                }
             },
         }
     });
-    let has_untag_fields = untags.len() > 0;
+    let has_untag_fields = !untags.is_empty();
     let scf_init = scf.iter().map(|s| {
         let ident = s.original.ident.as_ref().unwrap();
         quote! {
@@ -272,7 +287,7 @@ fn init_is_empty(
         }
     });
     let text_init = match text {
-        Some(tf) => {
+        | Some(tf) => {
             let ident = tf.original.ident.as_ref().unwrap();
             if tf.generic.is_opt() {
                 quote! {
@@ -292,8 +307,8 @@ fn init_is_empty(
                     }
                 }
             }
-        }
-        None => quote! {let has_text = false;},
+        },
+        | None => quote! {let has_text = false;},
     };
     let is_empty = {
         let idents = children.iter().chain(scf.iter()).map(|c| {

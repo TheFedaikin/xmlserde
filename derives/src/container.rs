@@ -1,7 +1,3 @@
-use crate::symbol::{
-    DEFAULT, DENY_UNKNOWN, NAME, ROOT, SKIP_SERIALIZING, TYPE, VEC_SIZE, WITH_CUSTOM_NS, WITH_NS,
-    XML_SERDE,
-};
 use proc_macro2::{Group, Span, TokenStream, TokenTree};
 use syn::parse::{self, Parse};
 use syn::punctuated::Punctuated;
@@ -9,6 +5,11 @@ use syn::token::Comma;
 use syn::Meta::Path;
 use syn::Meta::{self, NameValue};
 use syn::Variant;
+
+use crate::symbol::{
+    DEFAULT, DENY_UNKNOWN, NAME, ROOT, SKIP_SERIALIZING, TYPE, VEC_SIZE, WITH_CUSTOM_NS, WITH_NS,
+    XML_SERDE,
+};
 
 pub struct Container<'a> {
     pub struct_fields: Vec<StructField<'a>>, // Struct fields
@@ -22,7 +23,7 @@ pub struct Container<'a> {
 
 impl<'a> Container<'a> {
     pub fn is_enum(&self) -> bool {
-        self.enum_variants.len() > 0
+        !self.enum_variants.is_empty()
     }
 
     pub fn validate(&self) {
@@ -44,23 +45,23 @@ impl<'a> Container<'a> {
         for meta_item in item
             .attrs
             .iter()
-            .flat_map(|attr| get_xmlserde_meta_items(attr))
+            .flat_map(get_xmlserde_meta_items)
             .flatten()
         {
             match meta_item {
-                NameValue(m) if m.path == WITH_NS => {
+                | NameValue(m) if m.path == WITH_NS => {
                     if let Ok(s) = get_lit_byte_str(&m.value) {
                         with_ns = Some(s.clone());
                     }
-                }
-                NameValue(m) if m.path == ROOT => {
+                },
+                | NameValue(m) if m.path == ROOT => {
                     let s = get_lit_byte_str(&m.value).expect("parse root failed");
                     root = Some(s.clone());
-                }
-                Meta::Path(p) if p == DENY_UNKNOWN => {
+                },
+                | Meta::Path(p) if p == DENY_UNKNOWN => {
                     deny_unknown = true;
-                }
-                Meta::List(l) if l.path == WITH_CUSTOM_NS => {
+                },
+                | Meta::List(l) if l.path == WITH_CUSTOM_NS => {
                     let strs = l
                         .parse_args_with(Punctuated::<syn::LitByteStr, Comma>::parse_terminated)
                         .unwrap();
@@ -71,18 +72,18 @@ impl<'a> Container<'a> {
                         panic!("with_custom_ns should have 2 arguments")
                     }
                     custom_ns.push((first.clone(), second.clone()));
-                }
-                _ => panic!("unexpected"),
+                },
+                | _ => panic!("unexpected"),
             }
         }
         match &item.data {
-            syn::Data::Struct(ds) => {
+            | syn::Data::Struct(ds) => {
                 let fields = ds
                     .fields
                     .iter()
-                    .map(|f| StructField::from_ast(f))
+                    .map(StructField::from_ast)
                     .filter(|f| f.is_some())
-                    .map(|f| f.unwrap())
+                    .flatten()
                     .collect::<Vec<_>>();
                 Container {
                     struct_fields: fields,
@@ -93,12 +94,12 @@ impl<'a> Container<'a> {
                     root,
                     deny_unknown,
                 }
-            }
-            syn::Data::Enum(e) => {
+            },
+            | syn::Data::Enum(e) => {
                 let variants = e
                     .variants
                     .iter()
-                    .map(|v| EnumVariant::from_ast(v))
+                    .map(EnumVariant::from_ast)
                     .collect::<Vec<_>>();
                 Container {
                     struct_fields: vec![],
@@ -109,8 +110,8 @@ impl<'a> Container<'a> {
                     root,
                     deny_unknown,
                 }
-            }
-            syn::Data::Union(_) => panic!("Only support struct and enum type, union is found"),
+            },
+            | syn::Data::Union(_) => panic!("Only support struct and enum type, union is found"),
         }
     }
 }
@@ -134,14 +135,16 @@ impl<'a> FieldsSummary<'a> {
             untagged_enums: vec![],
             untagged_structs: vec![],
         };
-        fields.into_iter().for_each(|f| match f.ty {
-            EleType::Attr => result.attrs.push(f),
-            EleType::Child => result.children.push(f),
-            EleType::Text => result.text = Some(f),
-            EleType::SelfClosedChild => result.self_closed_children.push(f),
-            EleType::Untag => result.untagged_enums.push(f),
-            EleType::UntaggedEnum => result.untagged_enums.push(f),
-            EleType::UntaggedStruct => result.untagged_structs.push(f),
+        fields.into_iter().for_each(|f| {
+            match f.ty {
+                | EleType::Attr => result.attrs.push(f),
+                | EleType::Child => result.children.push(f),
+                | EleType::Text => result.text = Some(f),
+                | EleType::SelfClosedChild => result.self_closed_children.push(f),
+                | EleType::Untag => result.untagged_enums.push(f),
+                | EleType::UntaggedEnum => result.untagged_enums.push(f),
+                | EleType::UntaggedStruct => result.untagged_structs.push(f),
+            }
         });
         result
     }
@@ -160,10 +163,10 @@ pub struct StructField<'a> {
 impl<'a> StructField<'a> {
     pub fn validate(&self) {
         let untagged = match self.ty {
-            EleType::Untag => true,
-            EleType::UntaggedEnum => true,
-            EleType::UntaggedStruct => true,
-            _ => false,
+            | EleType::Untag => true,
+            | EleType::UntaggedEnum => true,
+            | EleType::UntaggedStruct => true,
+            | _ => false,
         };
         if untagged && self.name.is_some() {
             panic!("untagged types doesn't need a name")
@@ -177,78 +180,71 @@ impl<'a> StructField<'a> {
         let mut ty = Option::<EleType>::None;
         let mut vec_size = Option::<syn::Lit>::None;
         let generic = get_generics(&f.ty);
-        for meta_item in f
-            .attrs
-            .iter()
-            .flat_map(|attr| get_xmlserde_meta_items(attr))
-            .flatten()
-        {
+        for meta_item in f.attrs.iter().flat_map(get_xmlserde_meta_items).flatten() {
             match meta_item {
-                NameValue(m) if m.path == NAME => {
+                | NameValue(m) if m.path == NAME => {
                     if let Ok(s) = get_lit_byte_str(&m.value) {
                         name = Some(s.clone());
                     }
-                }
-                NameValue(m) if m.path == TYPE => {
+                },
+                | NameValue(m) if m.path == TYPE => {
                     if let Ok(s) = get_lit_str(&m.value) {
                         let t = match s.value().as_str() {
-                            "attr" => EleType::Attr,
-                            "child" => EleType::Child,
-                            "text" => EleType::Text,
-                            "sfc" => EleType::SelfClosedChild,
-                            "untag" => EleType::Untag, // todo: generate a deprecate function to let users know
-                            "untagged_enum" => EleType::UntaggedEnum,
-                            "untagged_struct" => EleType::UntaggedStruct,
-                            _ => panic!("invalid type"),
+                            | "attr" => EleType::Attr,
+                            | "child" => EleType::Child,
+                            | "text" => EleType::Text,
+                            | "sfc" => EleType::SelfClosedChild,
+                            | "untag" => EleType::Untag, /* todo: generate a deprecate function
+                                                           * to let users know */
+                            | "untagged_enum" => EleType::UntaggedEnum,
+                            | "untagged_struct" => EleType::UntaggedStruct,
+                            | _ => panic!("invalid type"),
                         };
                         ty = Some(t);
                     }
-                }
-                NameValue(m) if m.path == VEC_SIZE => {
+                },
+                | NameValue(m) if m.path == VEC_SIZE => {
                     if let syn::Expr::Lit(lit) = m.value {
                         match lit.lit {
-                            syn::Lit::Str(_) | syn::Lit::Int(_) => {
+                            | syn::Lit::Str(_) | syn::Lit::Int(_) => {
                                 vec_size = Some(lit.lit);
-                            }
-                            _ => panic!(),
+                            },
+                            | _ => panic!(),
                         }
                     } else {
                         panic!()
                     }
-                }
-                Path(word) if word == SKIP_SERIALIZING => {
+                },
+                | Path(word) if word == SKIP_SERIALIZING => {
                     skip_serializing = true;
-                }
-                NameValue(m) if m.path == DEFAULT => {
+                },
+                | NameValue(m) if m.path == DEFAULT => {
                     let path = parse_lit_into_expr_path(&m.value)
                         .expect("parse default path")
                         .clone();
                     default = Some(path);
-                }
-                _ => panic!("unexpected"),
+                },
+                | _ => panic!("unexpected"),
             }
         }
-        if ty.is_none() {
-            None
-        } else {
-            Some(StructField {
-                ty: ty.expect("should has a ty"),
-                name,
-                skip_serializing,
-                default,
-                original: f,
-                vec_size,
-                generic,
-            })
-        }
+        let ty = ty?;
+        Some(StructField {
+            ty,
+            name,
+            skip_serializing,
+            default,
+            original: f,
+            vec_size,
+            generic,
+        })
     }
 
     pub fn is_required(&self) -> bool {
         if matches!(self.ty, EleType::Untag) || matches!(self.ty, EleType::UntaggedEnum) {
             return match self.generic {
-                Generic::Vec(_) => false,
-                Generic::Opt(_) => false,
-                Generic::None => true,
+                | Generic::Vec(_) => false,
+                | Generic::Opt(_) => false,
+                | Generic::None => true,
             };
         }
         self.default.is_none()
@@ -268,29 +264,24 @@ impl<'a> EnumVariant<'a> {
     pub fn from_ast(v: &'a Variant) -> Self {
         let mut name = Option::<syn::LitByteStr>::None;
         let mut ele_type = EleType::Child;
-        for meta_item in v
-            .attrs
-            .iter()
-            .flat_map(|attr| get_xmlserde_meta_items(attr))
-            .flatten()
-        {
+        for meta_item in v.attrs.iter().flat_map(get_xmlserde_meta_items).flatten() {
             match meta_item {
-                NameValue(m) if m.path == NAME => {
+                | NameValue(m) if m.path == NAME => {
                     if let Ok(s) = get_lit_byte_str(&m.value) {
                         name = Some(s.clone());
                     }
-                }
-                NameValue(m) if m.path == TYPE => {
+                },
+                | NameValue(m) if m.path == TYPE => {
                     if let Ok(s) = get_lit_str(&m.value) {
                         let t = match s.value().as_str() {
-                            "child" => EleType::Child,
-                            "text" => EleType::Text,
-                            _ => panic!("invalid type in enum, should be `text` or `child` only"),
+                            | "child" => EleType::Child,
+                            | "text" => EleType::Text,
+                            | _ => panic!("invalid type in enum, should be `text` or `child` only"),
                         };
                         ele_type = t;
                     }
-                }
-                _ => panic!("unexpected attribute"),
+                },
+                | _ => panic!("unexpected attribute"),
             }
         }
         if v.fields.len() > 1 {
@@ -352,12 +343,12 @@ fn get_xmlserde_meta_items(attr: &syn::Attribute) -> Result<Vec<syn::Meta>, ()> 
     }
 
     match attr.parse_args_with(Punctuated::<Meta, Comma>::parse_terminated) {
-        Ok(meta) => Ok(meta.into_iter().collect()),
-        Err(_) => Err(()),
+        | Ok(meta) => Ok(meta.into_iter().collect()),
+        | Err(_) => Err(()),
     }
 }
 
-fn get_lit_byte_str<'a>(expr: &syn::Expr) -> Result<&syn::LitByteStr, ()> {
+fn get_lit_byte_str(expr: &syn::Expr) -> Result<&syn::LitByteStr, ()> {
     if let syn::Expr::Lit(lit) = expr {
         if let syn::Lit::ByteStr(l) = &lit.lit {
             return Ok(l);
@@ -366,10 +357,10 @@ fn get_lit_byte_str<'a>(expr: &syn::Expr) -> Result<&syn::LitByteStr, ()> {
     Err(())
 }
 
-fn get_lit_str<'a>(lit: &syn::Expr) -> Result<&syn::LitStr, ()> {
+fn get_lit_str(lit: &syn::Expr) -> Result<&syn::LitStr, ()> {
     if let syn::Expr::Lit(lit) = lit {
         if let syn::Lit::Str(l) = &lit.lit {
-            return Ok(&l);
+            return Ok(l);
         }
     }
     Err(())
@@ -410,50 +401,46 @@ fn respan_token(mut token: TokenTree, span: Span) -> TokenTree {
 
 fn get_generics(t: &syn::Type) -> Generic {
     match t {
-        syn::Type::Path(p) => {
+        | syn::Type::Path(p) => {
             let path = &p.path;
             match path.segments.last() {
-                Some(seg) => {
-                    if seg.ident.to_string() == "Vec" {
+                | Some(seg) => {
+                    if seg.ident == "Vec" {
                         match &seg.arguments {
-                            syn::PathArguments::AngleBracketed(a) => {
+                            | syn::PathArguments::AngleBracketed(a) => {
                                 let args = &a.args;
                                 if args.len() != 1 {
                                     Generic::None
+                                } else if let Some(syn::GenericArgument::Type(t)) = args.first() {
+                                    Generic::Vec(t)
                                 } else {
-                                    if let Some(syn::GenericArgument::Type(t)) = args.first() {
-                                        Generic::Vec(t)
-                                    } else {
-                                        Generic::None
-                                    }
+                                    Generic::None
                                 }
-                            }
-                            _ => Generic::None,
+                            },
+                            | _ => Generic::None,
                         }
-                    } else if seg.ident.to_string() == "Option" {
+                    } else if seg.ident == "Option" {
                         match &seg.arguments {
-                            syn::PathArguments::AngleBracketed(a) => {
+                            | syn::PathArguments::AngleBracketed(a) => {
                                 let args = &a.args;
                                 if args.len() != 1 {
                                     Generic::None
+                                } else if let Some(syn::GenericArgument::Type(t)) = args.first() {
+                                    Generic::Opt(t)
                                 } else {
-                                    if let Some(syn::GenericArgument::Type(t)) = args.first() {
-                                        Generic::Opt(t)
-                                    } else {
-                                        Generic::None
-                                    }
+                                    Generic::None
                                 }
-                            }
-                            _ => Generic::None,
+                            },
+                            | _ => Generic::None,
                         }
                     } else {
                         Generic::None
                     }
-                }
-                None => Generic::None,
+                },
+                | None => Generic::None,
             }
-        }
-        _ => Generic::None,
+        },
+        | _ => Generic::None,
     }
 }
 
@@ -463,32 +450,32 @@ pub enum Generic<'a> {
     None,
 }
 
-impl<'a> Generic<'a> {
+impl Generic<'_> {
     pub fn is_vec(&self) -> bool {
         match self {
-            Generic::Vec(_) => true,
-            _ => false,
+            | Generic::Vec(_) => true,
+            | _ => false,
         }
     }
 
     pub fn is_opt(&self) -> bool {
         match self {
-            Generic::Opt(_) => true,
-            _ => false,
+            | Generic::Opt(_) => true,
+            | _ => false,
         }
     }
 
     pub fn get_vec(&self) -> Option<&syn::Type> {
         match self {
-            Generic::Vec(v) => Some(v),
-            _ => None,
+            | Generic::Vec(v) => Some(v),
+            | _ => None,
         }
     }
 
     pub fn get_opt(&self) -> Option<&syn::Type> {
         match self {
-            Generic::Opt(v) => Some(v),
-            _ => None,
+            | Generic::Opt(v) => Some(v),
+            | _ => None,
         }
     }
 }

@@ -46,7 +46,7 @@ pub fn get_de_enum_impl_block(container: Container) -> proc_macro2::TokenStream 
             return;
         }
 
-        if let Some(_) = text_opt {
+        if text_opt.is_some() {
             panic!("should only have one `text` type")
         }
 
@@ -140,16 +140,16 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
         untagged_enums,
         untagged_structs,
     } = summary;
-    let get_children_tags = if children.len() > 0 || untagged_enums.len() > 0 {
+    let get_children_tags = if !children.is_empty() || !untagged_enums.is_empty() {
         let names = children.iter().map(|f| {
             let n = f.name.as_ref().expect("should have name");
             quote! {#n}
         });
         let untagged_enums = untagged_enums.iter().map(|f| {
             let ty = match &f.generic {
-                Generic::Vec(t) => t,
-                Generic::Opt(t) => t,
-                Generic::None => &f.original.ty,
+                | Generic::Vec(t) => t,
+                | Generic::Opt(t) => t,
+                | Generic::None => &f.original.ty,
             };
             quote! {#ty::__get_children_tags()}
         });
@@ -171,13 +171,7 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
     let sfc_branch = sfc_match_branch(self_closed_children);
     let ident = &container.original.ident;
     let (impl_generics, type_generics, where_clause) = container.original.generics.split_for_impl();
-    let text_branch = {
-        if let Some(t) = text {
-            Some(text_match_branch(t))
-        } else {
-            None
-        }
-    };
+    let text_branch = text.map(text_match_branch);
     let get_root = if let Some(r) = &container.root {
         quote! {
             fn de_root() -> Option<&'static [u8]> {
@@ -190,7 +184,7 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
 
     // Only those structs with only children can be untagged
     let deserialize_from_unparsed =
-        if children.len() > 0 && attr_len == 0 && sfc_len == 0 && untagged_enums.len() == 0 {
+        if !children.is_empty() && attr_len == 0 && sfc_len == 0 && untagged_enums.is_empty() {
             get_deserialize_from_unparsed(&children)
         } else {
             quote! {}
@@ -268,24 +262,24 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
 
 fn get_untagged_struct_fields_result(fileds: &[StructField]) -> proc_macro2::TokenStream {
     let branch = fileds.iter().map(|f| {
-        let ident = f.original.ident.as_ref().unwrap();
-        let ty = &f.original.ty;
-        let ident_unparsed_array = format_ident!("{}_unparseds", ident);
-        let ident_opt_unparsed_array = format_ident!("{}_opt_unparseds", ident);
-        match f.generic {
-            Generic::Vec(_) => unreachable!(),
-            Generic::Opt(_t) => quote! {
-                if #ident_opt_unparsed_array.len() > 0 {
-                    #ident = Some(#_t::__deserialize_from_unparsed_array(#ident_opt_unparsed_array));
-                }
-            },
-            Generic::None => quote! {
-                if #ident_unparsed_array.len() > 0 {
-                    #ident = Some(#ty::__deserialize_from_unparsed_array(#ident_unparsed_array));
-                }
-            },
-        }
-    });
+    let ident = f.original.ident.as_ref().unwrap();
+    let ty = &f.original.ty;
+    let ident_unparsed_array = format_ident!("{}_unparseds", ident);
+    let ident_opt_unparsed_array = format_ident!("{}_opt_unparseds", ident);
+    match f.generic {
+      | Generic::Vec(_) => unreachable!(),
+      | Generic::Opt(_t) => quote! {
+          if #ident_opt_unparsed_array.len() > 0 {
+              #ident = Some(#_t::__deserialize_from_unparsed_array(#ident_opt_unparsed_array));
+          }
+      },
+      | Generic::None => quote! {
+          if #ident_unparsed_array.len() > 0 {
+              #ident = Some(#ty::__deserialize_from_unparsed_array(#ident_unparsed_array));
+          }
+      },
+    }
+  });
 
     quote! {#(#branch)*}
 }
@@ -311,10 +305,10 @@ fn get_fields_init(fields: &FieldsSummary) -> proc_macro2::TokenStream {
         let ident = f.original.ident.as_ref().unwrap();
         let ty = &f.original.ty;
         match &f.default {
-            Some(p) => {
+            | Some(p) => {
                 quote! {let mut #ident = #p();}
-            }
-            None => {
+            },
+            | None => {
                 if let Some(opt) = f.generic.get_opt() {
                     quote! {
                         let mut #ident = Option::<#opt>::None;
@@ -322,50 +316,62 @@ fn get_fields_init(fields: &FieldsSummary) -> proc_macro2::TokenStream {
                 } else {
                     quote! {let mut #ident = Option::<#ty>::None;}
                 }
-            }
+            },
         }
     });
     let children_inits = fields.children.iter().map(|f| {
         let ident = f.original.ident.as_ref().unwrap();
         let ty = &f.original.ty;
         match &f.default {
-            Some(p) => {
+            | Some(p) => {
                 quote! {
                     let mut #ident = #p();
                 }
-            }
-            None => match f.generic {
-                Generic::Vec(v) => quote! {
-                    let mut #ident = Vec::<#v>::new();
-                },
-                Generic::Opt(opt) => quote! {
-                    let mut #ident = Option::<#opt>::None;
-                },
-                Generic::None => quote! {
-                    let mut #ident = Option::<#ty>::None;
-                },
+            },
+            | None => {
+                match f.generic {
+                    | Generic::Vec(v) => {
+                        quote! {
+                            let mut #ident = Vec::<#v>::new();
+                        }
+                    },
+                    | Generic::Opt(opt) => {
+                        quote! {
+                            let mut #ident = Option::<#opt>::None;
+                        }
+                    },
+                    | Generic::None => {
+                        quote! {
+                            let mut #ident = Option::<#ty>::None;
+                        }
+                    },
+                }
             },
         }
     });
     let text_init = match &fields.text {
-        Some(f) => {
+        | Some(f) => {
             let ident = f.original.ident.as_ref().unwrap();
             let ty = match f.generic {
-                Generic::Vec(_) => panic!("text element should not be Vec<T>"),
-                Generic::Opt(t) => t,
-                Generic::None => &f.original.ty,
+                | Generic::Vec(_) => panic!("text element should not be Vec<T>"),
+                | Generic::Opt(t) => t,
+                | Generic::None => &f.original.ty,
             };
             // let ty = &f.original.ty;
             match &f.default {
-                Some(e) => quote! {
-                        let mut #ident = #e();
+                | Some(e) => {
+                    quote! {
+                            let mut #ident = #e();
+                    }
                 },
-                None => quote! {
-                    let mut #ident = Option::<#ty>::None;
+                | None => {
+                    quote! {
+                        let mut #ident = Option::<#ty>::None;
+                    }
                 },
             }
-        }
-        None => quote! {},
+        },
+        | None => quote! {},
     };
     let sfc_init = fields.self_closed_children.iter().map(|f| {
         let ident = f.original.ident.as_ref().unwrap();
@@ -382,14 +388,20 @@ fn get_fields_init(fields: &FieldsSummary) -> proc_macro2::TokenStream {
 
         let ty = &f.original.ty;
         match f.generic {
-            Generic::Vec(t) => quote! {
-                let mut #ident = Vec::<#t>::new();
+            | Generic::Vec(t) => {
+                quote! {
+                    let mut #ident = Vec::<#t>::new();
+                }
             },
-            Generic::Opt(t) => quote! {
-                let mut #ident = Option::<#t>::None;
+            | Generic::Opt(t) => {
+                quote! {
+                    let mut #ident = Option::<#t>::None;
+                }
             },
-            Generic::None => quote! {
-                let mut #ident = Option::<#ty>::None;
+            | Generic::None => {
+                quote! {
+                    let mut #ident = Option::<#ty>::None;
+                }
             },
         }
     });
@@ -404,16 +416,22 @@ fn get_fields_init(fields: &FieldsSummary) -> proc_macro2::TokenStream {
 
         let ty = &f.original.ty;
         match f.generic {
-            Generic::Vec(_t) => quote! {
-                unreachable!()
+            | Generic::Vec(_t) => {
+                quote! {
+                    unreachable!()
+                }
             },
-            Generic::Opt(t) => quote! {
-                let mut #ident = Option::<#t>::None;
-                let mut #ident_opt_unparsed_array = Vec::new();
+            | Generic::Opt(t) => {
+                quote! {
+                    let mut #ident = Option::<#t>::None;
+                    let mut #ident_opt_unparsed_array = Vec::new();
+                }
             },
-            Generic::None => quote! {
-                let mut #ident = Option::<#ty>::None;
-                let mut #ident_unparsed_array = Vec::new();
+            | Generic::None => {
+                quote! {
+                    let mut #ident = Option::<#ty>::None;
+                    let mut #ident_unparsed_array = Vec::new();
+                }
             },
         }
     });
@@ -436,9 +454,9 @@ fn get_deserialize_from_unparsed(children: &[StructField]) -> proc_macro2::Token
             };
         }
         match &c.generic {
-            Generic::Vec(_) => quote! {let mut #ident = vec![];},
-            Generic::Opt(_) => quote! {let mut #ident = None;},
-            Generic::None => quote! {let mut #ident = None;},
+            | Generic::Vec(_) => quote! {let mut #ident = vec![];},
+            | Generic::Opt(_) => quote! {let mut #ident = None;},
+            | Generic::None => quote! {let mut #ident = None;},
         }
     });
     let body = children.iter().map(|c| {
@@ -449,21 +467,21 @@ fn get_deserialize_from_unparsed(children: &[StructField]) -> proc_macro2::Token
         let original_type = &c.original.ty;
         let ident = c.original.ident.as_ref().unwrap();
         match &c.generic {
-            Generic::Vec(t) => {
+            | Generic::Vec(t) => {
                 quote! {
                     #name => {
                         #ident.push(content.deserialize_to::<#t>().unwrap());
                     }
                 }
-            }
-            Generic::Opt(t) => {
+            },
+            | Generic::Opt(t) => {
                 quote! {
                     #name => {
                         #ident = Some(content.deserialize_to::<#t>().unwrap());
                     }
                 }
-            }
-            Generic::None => {
+            },
+            | Generic::None => {
                 if c.default.is_some() {
                     quote! {
                         #name => {
@@ -477,7 +495,7 @@ fn get_deserialize_from_unparsed(children: &[StructField]) -> proc_macro2::Token
                         }
                     }
                 }
-            }
+            },
         }
     });
     let result = {
@@ -514,39 +532,38 @@ fn get_deserialize_from_unparsed(children: &[StructField]) -> proc_macro2::Token
 }
 
 fn get_vec_init(children: &[StructField]) -> proc_macro2::TokenStream {
-    let vec_inits = children
-        .iter()
-        .filter(|c| c.generic.is_vec())
-        .map(|c| match &c.vec_size {
-            Some(lit) => {
+    let vec_inits = children.iter().filter(|c| c.generic.is_vec()).map(|c| {
+        match &c.vec_size {
+            | Some(lit) => {
                 let vec_ty = &c.generic.get_vec().unwrap();
                 let ident = c.original.ident.as_ref().unwrap();
                 match lit {
-                    syn::Lit::Str(s) => {
+                    | syn::Lit::Str(s) => {
                         let path = container::parse_lit_str::<syn::Expr>(s).unwrap();
                         quote! {
                             #ident = Vec::<#vec_ty>::with_capacity(#path as usize);
                         }
-                    }
-                    syn::Lit::Int(i) => {
+                    },
+                    | syn::Lit::Int(i) => {
                         quote! {
                             #ident = Vec::<#vec_ty>::with_capacity(#i);
                         }
-                    }
-                    _ => panic!(""),
+                    },
+                    | _ => panic!(""),
                 }
-            }
-            None => {
+            },
+            | None => {
                 quote! {}
-            }
-        });
+            },
+        }
+    });
     quote! {
         #(#vec_inits)*
     }
 }
 
 fn sfc_match_branch(fields: Vec<StructField>) -> proc_macro2::TokenStream {
-    if fields.len() == 0 {
+    if fields.is_empty() {
         return quote! {};
     }
     let mut idents = vec![];
@@ -624,9 +641,9 @@ fn text_match_branch(field: StructField) -> proc_macro2::TokenStream {
     let ident = field.original.ident.as_ref().expect("should have idnet");
     // let t = &field.original.ty;
     let (t, is_opt) = match field.generic {
-        Generic::Vec(_) => panic!("text element should not be Vec<T>"),
-        Generic::Opt(ty) => (ty, true),
-        Generic::None => (&field.original.ty, false),
+        | Generic::Vec(_) => panic!("text element should not be Vec<T>"),
+        | Generic::Opt(ty) => (ty, true),
+        | Generic::None => (&field.original.ty, false),
     };
     let tt = if field.is_required() || is_opt {
         quote! {#ident = Some(__v);}
@@ -651,39 +668,45 @@ fn text_match_branch(field: StructField) -> proc_macro2::TokenStream {
 }
 
 fn untag_text_enum_branches(untags: &[StructField]) -> proc_macro2::TokenStream {
-    if untags.len() == 0 {
+    if untags.is_empty() {
         return quote! {};
     }
 
     let mut branches: Vec<proc_macro2::TokenStream> = vec![];
-    untags.into_iter().for_each(|f| {
+    untags.iter().for_each(|f| {
         let ident = f.original.ident.as_ref().unwrap();
         let ty = &f.original.ty;
         let branch = match f.generic {
-            Generic::Vec(ty) => quote! {
-                if let Some(t) = #ty::__deserialize_from_text(&_str) {
-                    #ident.push(t);
+            | Generic::Vec(ty) => {
+                quote! {
+                    if let Some(t) = #ty::__deserialize_from_text(&_str) {
+                        #ident.push(t);
+                    }
                 }
             },
-            Generic::Opt(ty) => quote! {
-                if let Some(t) = #ty::__deserialize_from_text(&_str) {
-                    #ident = Some(t);
+            | Generic::Opt(ty) => {
+                quote! {
+                    if let Some(t) = #ty::__deserialize_from_text(&_str) {
+                        #ident = Some(t);
+                    }
                 }
             },
-            Generic::None => quote! {
-                if let Some(t) = #ty::__deserialize_from_text(&_str) {
-                    #ident = Some(t);
+            | Generic::None => {
+                quote! {
+                    if let Some(t) = #ty::__deserialize_from_text(&_str) {
+                        #ident = Some(t);
+                    }
                 }
             },
         };
         branches.push(branch);
     });
 
-    return quote! {#(#branches)*};
+    quote! {#(#branches)*}
 }
 
 fn untag_enums_match_branch(fields: &[StructField]) -> proc_macro2::TokenStream {
-    if fields.len() == 0 {
+    if fields.is_empty() {
         return quote! {};
     }
     let mut branches: Vec<proc_macro2::TokenStream> = vec![];
@@ -691,19 +714,25 @@ fn untag_enums_match_branch(fields: &[StructField]) -> proc_macro2::TokenStream 
         let ident = f.original.ident.as_ref().unwrap();
         let ty = &f.original.ty;
         let branch = match f.generic {
-            Generic::Vec(ty) => quote! {
-                _ty if #ty::__get_children_tags().contains(&_ty) => {
-                    #ident.push(#ty::deserialize(_ty, reader, s.attributes(), is_empty));
+            | Generic::Vec(ty) => {
+                quote! {
+                    _ty if #ty::__get_children_tags().contains(&_ty) => {
+                        #ident.push(#ty::deserialize(_ty, reader, s.attributes(), is_empty));
+                    }
                 }
             },
-            Generic::Opt(ty) => quote! {
-                _ty if #ty::__get_children_tags().contains(&_ty) => {
-                    #ident = Some(#ty::deserialize(_ty, reader, s.attributes(), is_empty));
+            | Generic::Opt(ty) => {
+                quote! {
+                    _ty if #ty::__get_children_tags().contains(&_ty) => {
+                        #ident = Some(#ty::deserialize(_ty, reader, s.attributes(), is_empty));
+                    }
                 }
             },
-            Generic::None => quote! {
-                _t if #ty::__get_children_tags().contains(&_t) => {
-                    #ident = Some(#ty::deserialize(_t, reader, s.attributes(), is_empty));
+            | Generic::None => {
+                quote! {
+                    _t if #ty::__get_children_tags().contains(&_t) => {
+                        #ident = Some(#ty::deserialize(_t, reader, s.attributes(), is_empty));
+                    }
                 }
             },
         };
@@ -715,38 +744,38 @@ fn untag_enums_match_branch(fields: &[StructField]) -> proc_macro2::TokenStream 
 }
 
 fn untag_structs_match_branch(fields: &[StructField]) -> proc_macro2::TokenStream {
-    if fields.len() == 0 {
+    if fields.is_empty() {
         return quote! {};
     }
     let mut branches: Vec<proc_macro2::TokenStream> = vec![];
 
     fields.iter().for_each(|f| {
-        let ident = f.original.ident.as_ref().unwrap();
-        let ty = &f.original.ty;
-        let ident_unparsed_array = format_ident!("{}_unparseds", ident);
-        let ident_opt_unparsed_array = format_ident!("{}_opt_unparseds", ident);
-        // let name = f.name.as_ref().expect("should have `name` for `child` type");
-        let branch = match f.generic {
-            Generic::Vec(_) => unreachable!(),
-            Generic::Opt(t) => quote! {
-                _t if #t::__get_children_tags().contains(&_t) => {
-                    let _r = ::xmlserde::Unparsed::deserialize(_t, reader, s.attributes(), is_empty);
-                    let _tags = #t::__get_children_tags();
-                    let idx = _tags.binary_search(&_t).unwrap();
-                    #ident_opt_unparsed_array.push((_tags[idx], _r));
-                }
-            },
-            Generic::None => quote! {
-                _t if #ty::__get_children_tags().contains(&_t) => {
-                    let _r = ::xmlserde::Unparsed::deserialize(_t, reader, s.attributes(), is_empty);
-                    let _tags = #ty::__get_children_tags();
-                    let idx = _tags.binary_search(&_t).unwrap();
-                    #ident_unparsed_array.push((_tags[idx], _r));
-                }
-            },
-        };
-        branches.push(branch);
-    });
+    let ident = f.original.ident.as_ref().unwrap();
+    let ty = &f.original.ty;
+    let ident_unparsed_array = format_ident!("{}_unparseds", ident);
+    let ident_opt_unparsed_array = format_ident!("{}_opt_unparseds", ident);
+    // let name = f.name.as_ref().expect("should have `name` for `child` type");
+    let branch = match f.generic {
+      | Generic::Vec(_) => unreachable!(),
+      | Generic::Opt(t) => quote! {
+          _t if #t::__get_children_tags().contains(&_t) => {
+              let _r = ::xmlserde::Unparsed::deserialize(_t, reader, s.attributes(), is_empty);
+              let _tags = #t::__get_children_tags();
+              let idx = _tags.binary_search(&_t).unwrap();
+              #ident_opt_unparsed_array.push((_tags[idx], _r));
+          }
+      },
+      | Generic::None => quote! {
+          _t if #ty::__get_children_tags().contains(&_t) => {
+              let _r = ::xmlserde::Unparsed::deserialize(_t, reader, s.attributes(), is_empty);
+              let _tags = #ty::__get_children_tags();
+              let idx = _tags.binary_search(&_t).unwrap();
+              #ident_unparsed_array.push((_tags[idx], _r));
+          }
+      },
+    };
+    branches.push(branch);
+  });
     quote! {
         #(#branches)*
     }
@@ -769,23 +798,23 @@ fn children_match_branch(
         let ident = f.original.ident.as_ref().unwrap();
         let t = &f.original.ty;
         let branch = match f.generic {
-            Generic::Vec(vec_ty) => {
+            | Generic::Vec(vec_ty) => {
                 quote! {
                     #tag => {
                         let __ele = #vec_ty::deserialize(#tag, reader, s.attributes(), is_empty);
                         #ident.push(__ele);
                     }
                 }
-            }
-            Generic::Opt(opt_ty) => {
+            },
+            | Generic::Opt(opt_ty) => {
                 quote! {
                     #tag => {
                         let __f = #opt_ty::deserialize(#tag, reader, s.attributes(), is_empty);
                         #ident = Some(__f);
                     },
                 }
-            }
-            Generic::None => {
+            },
+            | Generic::None => {
                 let tt = if f.is_required() {
                     quote! {
                         #ident = Some(__f);
@@ -801,12 +830,12 @@ fn children_match_branch(
                         #tt
                     },
                 }
-            }
+            },
         };
         branches.push(branch);
     });
-    let untagged_enums_branches = untag_enums_match_branch(&untagged_enums);
-    let untagged_structs_branches = untag_structs_match_branch(&untagged_structs);
+    let untagged_enums_branches = untag_enums_match_branch(untagged_enums);
+    let untagged_structs_branches = untag_structs_match_branch(untagged_structs);
     let untag_text_enum = untag_text_enum_branches(untagged_enums);
 
     quote! {
