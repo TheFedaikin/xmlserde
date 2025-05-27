@@ -781,6 +781,60 @@ mod tests {
     }
 
     #[test]
+    fn test_issue_52_enum_body() {
+        #[derive(XmlSerialize)]
+        #[xmlserde(root = b"root")]
+        struct Wrapper<T: xmlserde::XmlSerialize> {
+            #[xmlserde(name = b"header", ty = "attr")]
+            header: String,
+            #[xmlserde(ty = "untag")]
+            body: T,
+        }
+
+        #[derive(XmlSerialize)]
+        struct VariantAValue {
+            #[xmlserde(ty = "text")]
+            value: String,
+        }
+
+        #[derive(XmlSerialize)]
+        struct VariantBValue {
+            #[xmlserde(ty = "text")]
+            value: i32,
+        }
+
+        #[derive(XmlSerialize)]
+        enum BodyEnum {
+            #[xmlserde(name = b"VariantA")]
+            VariantA(VariantAValue),
+            #[xmlserde(name = b"VariantB")]
+            VariantB(VariantBValue),
+        }
+
+        let wrapper_a = Wrapper {
+            header: "header_a".to_string(),
+            body: BodyEnum::VariantA(VariantAValue {
+                value: "value_a".to_string(),
+            }),
+        };
+        let r_a = xml_serialize(wrapper_a);
+        assert_eq!(
+            r_a,
+            r#"<root header="header_a"><VariantA>value_a</VariantA></root>"#
+        );
+
+        let wrapper_b = Wrapper {
+            header: "header_b".to_string(),
+            body: BodyEnum::VariantB(VariantBValue { value: 42 }),
+        };
+        let r_b = xml_serialize(wrapper_b);
+        assert_eq!(
+            r_b,
+            r#"<root header="header_b"><VariantB>42</VariantB></root>"#
+        );
+    }
+
+    #[test]
     fn test_de_untagged_struct() {
         #[derive(XmlDeserialize)]
         #[xmlserde(root = b"foo")]
