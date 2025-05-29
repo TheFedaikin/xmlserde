@@ -145,7 +145,7 @@ pub fn get_de_enum_impl_block(container: Container) -> proc_macro2::TokenStream 
 
 pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
     let result = get_result(&container.struct_fields);
-    let summary = FieldsSummary::from_fields(container.struct_fields);
+    let summary = FieldsSummary::from_fields(&container.struct_fields);
     let fields_init = get_fields_init(&summary);
     let result_untagged_structs = get_untagged_struct_fields_result(&summary.untagged_structs);
     let FieldsSummary {
@@ -157,8 +157,17 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
         untagged_structs,
     } = summary;
     let get_children_tags = if !children.is_empty() || !untagged_enums.is_empty() {
+        let container = container.clone();
         let names = children.iter().map(|f| {
-            let n = f.name.as_ref().unwrap_or_else(|| &f.mapped_names[0]);
+            let n = container.get_field_name(&f).unwrap_or_else(|| {
+                let ident = f
+                    .original
+                    .ident
+                    .as_ref()
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "<unnamed>".to_string());
+                panic!("No name or mapped_names for field: {}", ident)
+            });
             quote! {#n}
         });
         let untagged_enums = untagged_enums.iter().map(|f| {
@@ -183,8 +192,9 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
     let attr_len = attrs.len();
     let sfc_len = self_closed_children.len();
     let vec_init = get_vec_init(&children);
-    let attr_branches = attrs.into_iter().map(|a| get_attr_branch(&a));
-    let child_branches = children_match_branch(&children, &untagged_enums, &untagged_structs);
+    let attr_branches = attrs.into_iter().map(|a| get_attr_branch(&container, &a));
+    let child_branches =
+        children_match_branch(&container, &children, &untagged_enums, &untagged_structs);
     let sfc_branch = sfc_match_branch(self_closed_children);
     let ident = &container.original.ident;
     let (impl_generics, type_generics, where_clause) = container.original.generics.split_for_impl();
@@ -627,23 +637,37 @@ fn sfc_match_branch(fields: Vec<StructField>) -> proc_macro2::TokenStream {
     }
 }
 
-fn get_attr_branch(field: &StructField) -> proc_macro2::TokenStream {
-    let tag = field
-        .name
-        .as_ref()
-        .unwrap_or_else(|| &field.mapped_names[0]);
-    let mapped_tags = if field.name.is_none() && !field.mapped_names.is_empty() {
-        &field.mapped_names[1..]
-    } else {
-        &field.mapped_names[..]
-    };
+fn get_attr_branch(container: &Container, field: &StructField) -> proc_macro2::TokenStream {
     let ident = field.original.ident.as_ref().unwrap();
     let t = &field.original.ty;
+    let tag_owned;
+    let tag = if !matches!(
+        field.ty,
+        EleType::Untag | EleType::UntaggedEnum | EleType::UntaggedStruct
+    ) {
+        tag_owned = container
+            .get_field_name(field)
+            .expect("Field must have a name, mapped_names, or be covered by rename_all");
+        &tag_owned
+    } else {
+        field
+            .name
+            .as_ref()
+            .or_else(|| field.mapped_names.first())
+            .expect("Untagged types must have a name or mapped_names")
+    };
+    let mapped_tags = if field.name.is_some() {
+        field.mapped_names.iter().collect::<Vec<_>>()
+    } else if field.mapped_names.len() > 1 {
+        field.mapped_names[1..].iter().collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
 
     if field.generic.is_opt() {
         let opt_ty = field.generic.get_opt().unwrap();
         quote! {
-            #tag #(| #mapped_tags)* => {
+            #tag #(| #mapped_tags)* | _ if attr.key.into_inner().eq_ignore_ascii_case(#tag) #(| attr.key.into_inner().eq_ignore_ascii_case(#mapped_tags))* => {
                 use xmlserde::{XmlValue, XmlDeserialize};
                 let s = String::from_utf8(attr.value.into_iter().map(|c| *c).collect()).unwrap();
                 match #opt_ty::deserialize(&s) {
@@ -663,7 +687,7 @@ fn get_attr_branch(field: &StructField) -> proc_macro2::TokenStream {
             quote! {#ident = __v;}
         };
         quote! {
-            #tag #(| #mapped_tags)* => {
+            #tag #(| #mapped_tags)* | _ if attr.key.into_inner().eq_ignore_ascii_case(#tag) #(| attr.key.into_inner().eq_ignore_ascii_case(#mapped_tags))* => {
                 use xmlserde::{XmlValue, XmlDeserialize};
                 let __s = String::from_utf8(attr.value.into_iter().map(|c| *c).collect()).unwrap();
                 match #t::deserialize(&__s) {
@@ -821,24 +845,30 @@ fn untag_structs_match_branch(fields: &[StructField]) -> proc_macro2::TokenStrea
           _t if #t::__get_children_tags().contains(&_t) => {
               let _r = ::xmlserde::Unparsed::deserialize(_t, reader, s.attributes(), is_empty);
               let _tags = #t::__get_children_tags();
-              let idx = _tags.binary_search(&_t).unwrap();
-              #ident_opt_unparsed_array.push((_tags[idx], _r));
+              if !_tags.is_empty() {
+                  let idx = _tags.binary_search(&_t).unwrap();
+                  #ident_opt_unparsed_array.push((_tags[idx], _r));
+              }
           }
       },
       | Generic::Boxed(inner_ty) => quote! {
           _t if #inner_ty::__get_children_tags().contains(&_t) => {
               let _r = ::xmlserde::Unparsed::deserialize(_t, reader, s.attributes(), is_empty);
               let _tags = #inner_ty::__get_children_tags();
-              let idx = _tags.binary_search(&_t).unwrap();
-              #ident_unparsed_array.push((_tags[idx], _r));
+              if !_tags.is_empty() {
+                  let idx = _tags.binary_search(&_t).unwrap();
+                  #ident_unparsed_array.push((_tags[idx], _r));
+              }
           }
       },
       | Generic::None => quote! {
           _t if #ty::__get_children_tags().contains(&_t) => {
               let _r = ::xmlserde::Unparsed::deserialize(_t, reader, s.attributes(), is_empty);
               let _tags = #ty::__get_children_tags();
-              let idx = _tags.binary_search(&_t).unwrap();
-              #ident_unparsed_array.push((_tags[idx], _r));
+              if !_tags.is_empty() {
+                  let idx = _tags.binary_search(&_t).unwrap();
+                  #ident_unparsed_array.push((_tags[idx], _r));
+              }
           }
       },
     };
@@ -850,6 +880,7 @@ fn untag_structs_match_branch(fields: &[StructField]) -> proc_macro2::TokenStrea
 }
 
 fn children_match_branch(
+    container: &Container,
     fields: &[StructField],
     untagged_enums: &[StructField],
     untagged_structs: &[StructField],
@@ -859,16 +890,20 @@ fn children_match_branch(
     }
     let mut branches = vec![];
     fields.iter().for_each(|f| {
-        if !matches!(f.ty, EleType::Child) {
-            panic!("")
-        }
-        let tag = f.name.as_ref().expect("should have name");
+        let tag = container
+            .get_field_name(f)
+            .expect("Field must have a name, mapped_names, or be covered by rename_all");
+        let mapped_tags = if f.name.is_none() && !f.mapped_names.is_empty() {
+            &f.mapped_names[1..]
+        } else {
+            &f.mapped_names[..]
+        };
         let ident = f.original.ident.as_ref().unwrap();
         let t = &f.original.ty;
         let branch = match f.generic {
             | Generic::Vec(vec_ty) => {
                 quote! {
-                    #tag => {
+                    #tag #(| #mapped_tags)* => {
                         let __ele = #vec_ty::deserialize(#tag, reader, s.attributes(), is_empty);
                         #ident.push(__ele);
                     }
@@ -876,18 +911,18 @@ fn children_match_branch(
             },
             | Generic::Opt(opt_ty) => {
                 quote! {
-                    #tag => {
+                    #tag #(| #mapped_tags)* => {
                         let __f = #opt_ty::deserialize(#tag, reader, s.attributes(), is_empty);
                         #ident = Some(__f);
-                    },
+                    }
                 }
             },
             | Generic::Boxed(inner_ty) => {
                 quote! {
-                    #tag => {
+                    #tag #(| #mapped_tags)* => {
                         let __f = #inner_ty::deserialize(#tag, reader, s.attributes(), is_empty);
                         #ident = Some(Box::new(__f));
-                    },
+                    }
                 }
             },
             | Generic::None => {
@@ -901,10 +936,10 @@ fn children_match_branch(
                     }
                 };
                 quote! {
-                    #tag => {
+                    #tag #(| #mapped_tags)* => {
                         let __f = #t::deserialize(#tag, reader, s.attributes(), is_empty);
                         #tt
-                    },
+                    }
                 }
             },
         };

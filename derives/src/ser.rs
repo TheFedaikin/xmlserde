@@ -88,7 +88,7 @@ pub fn get_ser_enum_impl_block(container: Container) -> proc_macro2::TokenStream
 }
 
 pub fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
-    let write_ns = match container.with_ns {
+    let write_ns = match &container.with_ns {
         | Some(ns) => {
             quote! {
                 attrs.push(Attribute::from((b"xmlns".as_ref(), #ns.as_ref())));
@@ -99,7 +99,7 @@ pub fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStre
     let write_custom_ns = if container.custom_ns.is_empty() {
         quote! {}
     } else {
-        let cns = container.custom_ns.into_iter().map(|(ns, value)| {
+        let cns = container.custom_ns.iter().map(|(ns, value)| {
             quote! {
                 let mut __vec = b"xmlns:".to_vec();
                 __vec.extend(#ns.to_vec());
@@ -115,15 +115,29 @@ pub fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStre
         self_closed_children,
         untagged_enums: untags,
         untagged_structs: _,
-    } = FieldsSummary::from_fields(container.struct_fields);
+    } = FieldsSummary::from_fields(&container.struct_fields);
     if text.is_some()
         && (!children.is_empty() || !self_closed_children.is_empty() || !untags.is_empty())
     {
         panic!("Cannot have the text and children at the same time.")
     }
     let init = init_is_empty(&children, &self_closed_children, &untags, &text);
-    let build_attr_and_push = attrs.into_iter().map(|attr| {
-        let name = attr.name.as_ref().unwrap_or_else(|| &attr.mapped_names[0]);
+    let build_attr_and_push = attrs.iter().map(|attr| {
+        let name = container
+            .get_field_name(&attr)
+            .or_else(|| {
+                // Try to use rename_all if possible
+                container.get_field_name(&attr)
+            })
+            .unwrap_or_else(|| {
+                let ident = attr
+                    .original
+                    .ident
+                    .as_ref()
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "<unnamed>".to_string());
+                panic!("No name or mapped_names or rename_all for field: {}", ident)
+            });
         let ident = attr.original.ident.as_ref().unwrap();
         match &attr.generic {
             | Generic::Vec(_) => panic!("cannot use a vector in attribute"),
@@ -212,10 +226,23 @@ pub fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStre
     } else {
         let write_scf = self_closed_children.into_iter().map(|f| {
             let ident = f.original.ident.as_ref().unwrap();
-            let name = f.name.as_ref().unwrap_or_else(|| &f.mapped_names[0]);
+            let name_owned = container.get_field_name(&f);
+            let name_ref: &syn::LitByteStr = if let Some(n) = f.name.as_ref() {
+                n
+            } else if let Some(n) = name_owned.as_ref() {
+                n
+            } else {
+                let ident = f
+                    .original
+                    .ident
+                    .as_ref()
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "<unnamed>".to_string());
+                panic!("No name or mapped_names or rename_all for field: {}", ident)
+            };
             quote! {
                 if self.#ident {
-                    let event = BytesStart::new(String::from_utf8_lossy(#name));
+                    let event = BytesStart::new(String::from_utf8_lossy(#name_ref.as_ref()));
                     writer.write_event(Event::Empty(event));
                 }
             }
@@ -225,17 +252,26 @@ pub fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStre
                 quote! {}
             } else {
                 let ident = f.original.ident.as_ref().unwrap();
-                let name = f.name.as_ref().unwrap_or_else(|| &f.mapped_names[0]);
+                let name_owned = container.get_field_name(&f);
+                let name_ref: &syn::LitByteStr = if let Some(n) = f.name.as_ref() {
+                    n
+                } else if let Some(n) = name_owned.as_ref() {
+                    n
+                } else {
+                    let ident = f
+                        .original
+                        .ident
+                        .as_ref()
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "<unnamed>".to_string());
+                    panic!("No name or mapped_names or rename_all for field: {}", ident)
+                };
                 match &f.generic {
                     | Generic::Boxed(_) => {
-                        // Field is Box<ChildType>
-                        quote! { (*self.#ident).serialize(#name, writer); }
+                        quote! { (*self.#ident).serialize(#name_ref.as_ref(), writer); }
                     },
                     | _ => {
-                        // Field is ChildType, Vec<ChildType>, Option<ChildType> -> .serialize will
-                        // handle these For Option<Box<T>>,
-                        // self.#ident.serialize should correctly call option then box's serialize.
-                        quote! { self.#ident.serialize(#name, writer); }
+                        quote! { self.#ident.serialize(#name_ref.as_ref(), writer); }
                     },
                 }
             }

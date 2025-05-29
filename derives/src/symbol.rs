@@ -34,6 +34,7 @@ pub const TYPE_UNTAGGED_STRUCT: Symbol = Symbol("untagged_struct");
 
 // Enum-related attributes
 pub const RENAME: Symbol = Symbol("rename");
+pub const RENAME_ALL: Symbol = Symbol("rename_all");
 pub const OTHER: Symbol = Symbol("other");
 
 impl PartialEq<Symbol> for Ident {

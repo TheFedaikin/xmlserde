@@ -5,10 +5,11 @@ use syn::token::Comma;
 use syn::Meta::{self, NameValue};
 use syn::Variant;
 
+use crate::case::{parse_case, Case};
 use crate::symbol::{
-    DEFAULT, DENY_UNKNOWN, MAP, NAME, ROOT, SKIP_SERIALIZING, TYPE, TYPE_ATTR, TYPE_CHILD,
-    TYPE_SFC, TYPE_TEXT, TYPE_UNTAG, TYPE_UNTAGGED_ENUM, TYPE_UNTAGGED_STRUCT, VEC_SIZE,
-    WITH_CUSTOM_NS, WITH_NS, XML_SERDE,
+    DEFAULT, DENY_UNKNOWN, MAP, NAME, RENAME_ALL, ROOT, SKIP_SERIALIZING, TYPE, TYPE_ATTR,
+    TYPE_CHILD, TYPE_SFC, TYPE_TEXT, TYPE_UNTAG, TYPE_UNTAGGED_ENUM, TYPE_UNTAGGED_STRUCT,
+    VEC_SIZE, WITH_CUSTOM_NS, WITH_NS, XML_SERDE,
 };
 
 #[derive(Debug)]
@@ -38,6 +39,7 @@ impl std::fmt::Display for ContainerError {
 
 impl std::error::Error for ContainerError {}
 
+#[derive(Clone)]
 pub struct Container<'a> {
     pub struct_fields: Vec<StructField<'a>>, // Struct fields
     pub enum_variants: Vec<EnumVariant<'a>>,
@@ -46,6 +48,7 @@ pub struct Container<'a> {
     pub custom_ns: Vec<(syn::LitByteStr, syn::LitByteStr)>,
     pub root: Option<syn::LitByteStr>,
     pub deny_unknown: bool,
+    pub rename_all: Option<syn::LitStr>,
 }
 
 impl<'a> Container<'a> {
@@ -107,11 +110,20 @@ impl<'a> Container<'a> {
         Some((first.clone(), second.clone()))
     }
 
+    fn parse_rename_all(meta: &syn::Meta) -> Option<syn::LitStr> {
+        let NameValue(m) = meta else { return None };
+        if m.path != RENAME_ALL {
+            return None;
+        }
+        get_lit_str(&m.value).ok().cloned()
+    }
+
     fn parse_container_attrs(item: &'a syn::DeriveInput) -> ContainerAttrs {
         let mut with_ns = None;
         let mut custom_ns = Vec::new();
         let mut root = None;
         let mut deny_unknown = false;
+        let mut rename_all = None;
 
         for meta_item in item
             .attrs
@@ -129,6 +141,8 @@ impl<'a> Container<'a> {
                 }
             } else if let Some(ns_pair) = Self::parse_custom_ns(&meta_item) {
                 custom_ns.push(ns_pair);
+            } else if let Some(rename) = Self::parse_rename_all(&meta_item) {
+                rename_all = Some(rename);
             }
         }
 
@@ -137,6 +151,7 @@ impl<'a> Container<'a> {
             custom_ns,
             root,
             deny_unknown,
+            rename_all,
         }
     }
 
@@ -161,6 +176,7 @@ impl<'a> Container<'a> {
                     custom_ns: attrs.custom_ns,
                     root: attrs.root,
                     deny_unknown: attrs.deny_unknown,
+                    rename_all: attrs.rename_all,
                 })
             },
             | syn::Data::Enum(e) => {
@@ -177,10 +193,43 @@ impl<'a> Container<'a> {
                     custom_ns: attrs.custom_ns,
                     root: attrs.root,
                     deny_unknown: attrs.deny_unknown,
+                    rename_all: attrs.rename_all,
                 })
             },
             | syn::Data::Union(_) => Err(ContainerError::UnionNotSupported),
         }
+    }
+
+    pub fn get_field_name(&self, field: &StructField<'a>) -> Option<syn::LitByteStr> {
+        // If field has an explicit name, use it directly
+        if let Some(name) = &field.name {
+            return Some(name.clone());
+        }
+
+        // If field has mapped names, use the first one
+        if !field.mapped_names.is_empty() {
+            return Some(field.mapped_names[0].clone());
+        }
+
+        // Only apply rename_all case conversion if there's no explicit name or mapped names
+        if let Some(rename_all) = &self.rename_all {
+            if let Some(case) = parse_case(rename_all) {
+                // Defensive: field.original.ident may be None for unnamed fields
+                if let Some(ident) = field.original.ident.as_ref() {
+                    let field_name = ident.to_string();
+                    let converted = case.convert(&field_name);
+                    return Some(syn::LitByteStr::new(
+                        converted.as_bytes(),
+                        rename_all.span(),
+                    ));
+                } else {
+                    // No ident for this field, cannot apply rename_all
+                    return None;
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -194,7 +243,8 @@ pub struct FieldsSummary<'a> {
 }
 
 impl<'a> FieldsSummary<'a> {
-    pub fn from_fields(fields: Vec<StructField<'a>>) -> Self {
+    pub fn from_fields(fields: &[StructField<'a>]) -> Self {
+        let fields = fields.to_vec();
         let mut result = FieldsSummary {
             children: vec![],
             text: None,
@@ -216,6 +266,7 @@ impl<'a> FieldsSummary<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct StructField<'a> {
     pub ty: EleType,
     pub name: Option<syn::LitByteStr>,
@@ -355,6 +406,7 @@ impl<'a> StructField<'a> {
             }
         }
 
+        // Defensive: If ty is missing, return a clear error
         let ty = ty.ok_or_else(|| ContainerError::MissingTypeAttribute(field_name.clone()))?;
         Ok(FieldAttrs {
             name,
@@ -370,10 +422,15 @@ impl<'a> StructField<'a> {
         let attrs = Self::parse_field_attrs(f)?;
         let generic = get_generics(&f.ty);
 
+        // Remove fallback name assignment: do not assign a name if neither name nor mapped_names are present.
+        // Let get_field_name handle rename_all case conversion at runtime.
+        let name = attrs.name;
+        let mapped_names = attrs.mapped_names;
+
         Ok(StructField {
             ty: attrs.ty,
-            name: attrs.name,
-            mapped_names: attrs.mapped_names,
+            name,
+            mapped_names,
             skip_serializing: attrs.skip_serializing,
             default: attrs.default,
             original: f,
@@ -397,6 +454,7 @@ impl<'a> StructField<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct EnumVariant<'a> {
     pub name: Option<syn::LitByteStr>,
     pub ident: &'a syn::Ident,
@@ -494,7 +552,7 @@ impl<'a> EnumVariant<'a> {
     }
 }
 
-/// Specify where this field is in the xml.
+#[derive(Clone)]
 pub enum EleType {
     Attr,
     Child,
@@ -628,6 +686,7 @@ pub(crate) fn get_generics(t: &syn::Type) -> Generic {
     Generic::None
 }
 
+#[derive(Clone)]
 pub enum Generic<'a> {
     Vec(&'a syn::Type),
     Opt(&'a syn::Type),
@@ -685,6 +744,7 @@ pub struct ContainerAttrs {
     pub custom_ns: Vec<(syn::LitByteStr, syn::LitByteStr)>,
     pub root: Option<syn::LitByteStr>,
     pub deny_unknown: bool,
+    pub rename_all: Option<syn::LitStr>,
 }
 
 // Define struct for field attributes

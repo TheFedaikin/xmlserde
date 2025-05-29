@@ -1072,4 +1072,235 @@ mod tests {
         assert!(!xml.contains("parrot"));
         assert!(xml.contains("pigeon=\"cooing\""));
     }
+
+    #[test]
+    fn test_struct_rename_all() {
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"status")]
+        #[xmlserde(rename_all = "lowercase")]
+        struct Status {
+            #[xmlserde(name = b"pigeon", ty = "attr")]
+            bird: String,
+        }
+
+        let status = Status {
+            bird: "talking".to_string(),
+        };
+        let xml = xml_serialize(status);
+        assert!(xml.contains("pigeon=\"talking\""));
+
+        let xml = r#"<status pigeon="talking"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, "talking");
+
+        let xml = r#"<status Pigeon="talking"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, "talking");
+
+        let xml = r#"<status PIGEON="talking"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, "talking");
+
+        let xml = r#"<status PiGeOn="talking"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, "talking");
+
+        let xml = r#"<status pigeoN="talking"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, "talking");
+    }
+
+    #[test]
+    fn test_struct_rename_all_cases() {
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"person")]
+        #[xmlserde(rename_all = "lowercase")]
+        struct Person {
+            #[xmlserde(ty = "attr")]
+            first_name: String,
+            #[xmlserde(ty = "attr")]
+            last_name: String,
+            #[xmlserde(ty = "attr")]
+            is_active: bool,
+        }
+
+        // Test lowercase conversion
+        let person = Person {
+            first_name: "John".to_string(),
+            last_name: "Doe".to_string(),
+            is_active: true,
+        };
+        let xml = xml_serialize(person);
+        assert!(xml.contains("first_name=\"John\""));
+        assert!(xml.contains("last_name=\"Doe\""));
+        assert!(xml.contains("is_active=\"1\""));
+
+        let xml = r#"<person first_name="John" last_name="Doe" is_active="1"></person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.last_name, "Doe");
+        assert!(person.is_active);
+
+        // Test case-insensitive deserialization
+        let xml = r#"<person First_Name="John" LAST_NAME="Doe" IS_ACTIVE="1"></person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.last_name, "Doe");
+        assert!(person.is_active);
+
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"person")]
+        #[xmlserde(rename_all = "UPPERCASE")]
+        struct PersonUpper {
+            #[xmlserde(ty = "attr")]
+            first_name: String,
+            #[xmlserde(ty = "attr")]
+            last_name: String,
+            #[xmlserde(ty = "attr")]
+            is_active: bool,
+        }
+
+        // Test uppercase conversion
+        let person = PersonUpper {
+            first_name: "John".to_string(),
+            last_name: "Doe".to_string(),
+            is_active: true,
+        };
+        let xml = xml_serialize(person);
+        assert!(xml.contains("FIRST_NAME=\"John\""));
+        assert!(xml.contains("LAST_NAME=\"Doe\""));
+        assert!(xml.contains("IS_ACTIVE=\"1\""));
+
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"person")]
+        #[xmlserde(rename_all = "camelCase")]
+        struct PersonCamel {
+            #[xmlserde(ty = "attr")]
+            first_name: String,
+            #[xmlserde(ty = "attr")]
+            last_name: String,
+            #[xmlserde(ty = "attr")]
+            is_active: bool,
+        }
+
+        // Test camelCase conversion
+        let person = PersonCamel {
+            first_name: "John".to_string(),
+            last_name: "Doe".to_string(),
+            is_active: true,
+        };
+        let xml = xml_serialize(person);
+        assert!(xml.contains("firstName=\"John\""));
+        assert!(xml.contains("lastName=\"Doe\""));
+        assert!(xml.contains("isActive=\"1\""));
+
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"person")]
+        #[xmlserde(rename_all = "PascalCase")]
+        struct PersonPascal {
+            #[xmlserde(ty = "attr")]
+            first_name: String,
+            #[xmlserde(ty = "attr")]
+            last_name: String,
+            #[xmlserde(ty = "attr")]
+            is_active: bool,
+        }
+
+        // Test PascalCase conversion
+        let person = PersonPascal {
+            first_name: "John".to_string(),
+            last_name: "Doe".to_string(),
+            is_active: true,
+        };
+        let xml = xml_serialize(person);
+        assert!(xml.contains("FirstName=\"John\""));
+        assert!(xml.contains("LastName=\"Doe\""));
+        assert!(xml.contains("IsActive=\"1\""));
+    }
+
+    #[test]
+    fn test_rename_all_with_mapped_names() {
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"person")]
+        #[xmlserde(rename_all = "snake_case")]
+        struct Person {
+            #[xmlserde(map = [b"first_name", b"firstName", b"FirstName"], ty = "attr")]
+            first_name: String,
+            #[xmlserde(map = [b"last_name", b"lastName", b"LastName"], ty = "attr")]
+            last_name: String,
+        }
+
+        // Test serialization - should use the canonical name (first mapped name)
+        let person = Person {
+            first_name: "John".to_string(),
+            last_name: "Doe".to_string(),
+        };
+        let xml = xml_serialize(person);
+        assert!(xml.contains("first_name=\"John\""));
+        assert!(xml.contains("last_name=\"Doe\""));
+
+        // Test deserialization with different mapped names
+        let xml = r#"<person first_name="John" last_name="Doe"></person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.last_name, "Doe");
+
+        let xml = r#"<person firstName="John" lastName="Doe"></person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.last_name, "Doe");
+
+        let xml = r#"<person FirstName="John" LastName="Doe"></person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.last_name, "Doe");
+    }
+
+    #[test]
+    fn test_nested_struct_rename_all() {
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"person")]
+        #[xmlserde(rename_all = "snake_case")]
+        struct Person {
+            #[xmlserde(ty = "attr")]
+            first_name: String,
+            #[xmlserde(ty = "child")]
+            address: Address,
+        }
+
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(rename_all = "camelCase")]
+        struct Address {
+            #[xmlserde(ty = "attr")]
+            street_name: String,
+            #[xmlserde(ty = "attr")]
+            house_number: u32,
+        }
+
+        let person = Person {
+            first_name: "John".to_string(),
+            address: Address {
+                street_name: "Main Street".to_string(),
+                house_number: 123,
+            },
+        };
+
+        let xml = xml_serialize(person);
+        assert!(xml.contains("first_name=\"John\""));
+        assert!(xml.contains("streetName=\"Main Street\""));
+        assert!(xml.contains("houseNumber=\"123\""));
+
+        let xml = r#"<person first_name="John"><address streetName="Main Street" houseNumber="123"/></person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.address.street_name, "Main Street");
+        assert_eq!(person.address.house_number, 123);
+
+        // Test case-insensitive deserialization
+        let xml = r#"<person First_Name="John"><address StreetName="Main Street" HouseNumber="123"/></person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.address.street_name, "Main Street");
+        assert_eq!(person.address.house_number, 123);
+    }
 }
