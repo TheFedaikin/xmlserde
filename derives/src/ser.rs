@@ -1,18 +1,8 @@
-use syn::DeriveInput;
+use quote::quote;
 
-use crate::container::{Container, Derive, EleType, FieldsSummary, Generic, StructField};
+use crate::container::{Container, EleType, FieldsSummary, Generic, StructField};
 
-pub fn get_ser_impl_block(input: DeriveInput) -> proc_macro2::TokenStream {
-    let container = Container::from_ast(&input, Derive::Serialize);
-    container.validate();
-    if container.is_enum() {
-        get_ser_enum_impl_block(container)
-    } else {
-        get_ser_struct_impl_block(container)
-    }
-}
-
-fn get_ser_enum_impl_block(container: Container) -> proc_macro2::TokenStream {
+pub fn get_ser_enum_impl_block(container: Container) -> proc_macro2::TokenStream {
     let ident = &container.original.ident;
     let (impl_generics, type_generics, where_clause) = container.original.generics.split_for_impl();
     let branches = container.enum_variants.iter().map(|v| {
@@ -97,7 +87,7 @@ fn get_ser_enum_impl_block(container: Container) -> proc_macro2::TokenStream {
     }
 }
 
-fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
+pub fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
     let write_ns = match container.with_ns {
         | Some(ns) => {
             quote! {
@@ -133,7 +123,7 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
     }
     let init = init_is_empty(&children, &self_closed_children, &untags, &text);
     let build_attr_and_push = attrs.into_iter().map(|attr| {
-        let name = attr.name.as_ref().unwrap();
+        let name = attr.name.as_ref().unwrap_or_else(|| &attr.mapped_names[0]);
         let ident = attr.original.ident.as_ref().unwrap();
         match &attr.generic {
             | Generic::Vec(_) => panic!("cannot use a vector in attribute"),
@@ -152,24 +142,22 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
             | Generic::Boxed(_) => {
                 quote! { panic!("Attributes cannot be of type Box<T>"); }
             },
-            | Generic::None => {
-                match &attr.default {
-                    | Some(path) => {
-                        quote! {
-                            let mut ser;
-                            if #path() != self.#ident {
-                                ser = self.#ident.serialize();
-                                attrs.push(Attribute::from((#name.as_ref(), ser.as_bytes())));
-                            }
-                        }
-                    },
-                    | None => {
-                        quote! {
-                            let ser = self.#ident.serialize();
+            | Generic::None => match &attr.default {
+                | Some(path) => {
+                    quote! {
+                        let mut ser;
+                        if #path() != self.#ident {
+                            ser = self.#ident.serialize();
                             attrs.push(Attribute::from((#name.as_ref(), ser.as_bytes())));
                         }
-                    },
-                }
+                    }
+                },
+                | None => {
+                    quote! {
+                        let ser = self.#ident.serialize();
+                        attrs.push(Attribute::from((#name.as_ref(), ser.as_bytes())));
+                    }
+                },
             },
         }
     });
@@ -224,7 +212,7 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
     } else {
         let write_scf = self_closed_children.into_iter().map(|f| {
             let ident = f.original.ident.as_ref().unwrap();
-            let name = f.name.as_ref().expect("should have name");
+            let name = f.name.as_ref().unwrap_or_else(|| &f.mapped_names[0]);
             quote! {
                 if self.#ident {
                     let event = BytesStart::new(String::from_utf8_lossy(#name));
@@ -237,7 +225,7 @@ fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStream {
                 quote! {}
             } else {
                 let ident = f.original.ident.as_ref().unwrap();
-                let name = f.name.as_ref().expect("should have name");
+                let name = f.name.as_ref().unwrap_or_else(|| &f.mapped_names[0]);
                 match &f.generic {
                     | Generic::Boxed(_) => {
                         // Field is Box<ChildType>
@@ -340,25 +328,21 @@ fn init_is_empty(
                     let #ident = self.#ident.is_some();
                 }
             },
-            | Generic::Boxed(_) => {
-                match &c.default {
-                    | Some(d) => {
-                        quote! {
-                            let #ident = *self.#ident != #d();
-                        }
-                    },
-                    | None => quote! {let #ident = true;},
-                }
+            | Generic::Boxed(_) => match &c.default {
+                | Some(d) => {
+                    quote! {
+                        let #ident = *self.#ident != #d();
+                    }
+                },
+                | None => quote! {let #ident = true;},
             },
-            | Generic::None => {
-                match &c.default {
-                    | Some(d) => {
-                        quote! {
-                            let #ident = self.#ident != #d();
-                        }
-                    },
-                    | None => quote! {let #ident = true;},
-                }
+            | Generic::None => match &c.default {
+                | Some(d) => {
+                    quote! {
+                        let #ident = self.#ident != #d();
+                    }
+                },
+                | None => quote! {let #ident = true;},
             },
         }
     });

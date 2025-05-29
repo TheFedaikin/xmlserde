@@ -1,17 +1,17 @@
+use crate::symbol::{MAP, OTHER, RENAME};
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Error, Fields, Ident, Lit, Type};
+use syn::{Data, DeriveInput, Error, Fields, Ident, Type};
 
 struct EnumVariantInfo {
     ident: Ident,
     xml_value: String,
     is_other: bool,
     other_type: Option<Type>,
+    mapped_values: Vec<String>,
 }
 
 pub fn get_xml_serde_enum_impl_block(input: DeriveInput) -> Result<TokenStream, syn::Error> {
-    let enum_name = &input.ident;
-
     let variants = match &input.data {
         | Data::Enum(data_enum) => &data_enum.variants,
         | _ => {
@@ -29,16 +29,17 @@ pub fn get_xml_serde_enum_impl_block(input: DeriveInput) -> Result<TokenStream, 
         let mut xml_value_str = variant_ident.to_string();
         let mut is_other_attr = false;
         let mut other_inner_type: Option<Type> = None;
+        let mut mapped_values = Vec::new();
 
         for attr in &variant.attrs {
             if attr.path().is_ident("xmlserde") {
-                // Parse #[xmlserde(rename = "Value")] or #[xmlserde(other)]
+                // Parse #[xmlserde(rename = "Value")] or #[xmlserde(other)] or #[xmlserde(map = ["value1", "value2"])]
                 attr.parse_nested_meta(|meta| {
-                    if meta.path.is_ident("rename") {
+                    if meta.path == RENAME {
                         let value = meta.value()?;
                         let lit_str: syn::LitStr = value.parse()?;
                         xml_value_str = lit_str.value();
-                    } else if meta.path.is_ident("other") {
+                    } else if meta.path == OTHER {
                         is_other_attr = true;
                         // Check if it has a single unnamed field for the String
                         if let Fields::Unnamed(fields_unnamed) = &variant.fields {
@@ -49,6 +50,16 @@ pub fn get_xml_serde_enum_impl_block(input: DeriveInput) -> Result<TokenStream, 
                             }
                         } else {
                             return Err(Error::new_spanned(&variant.fields, "#[xmlserde(other)] variant must have unnamed fields."));
+                        }
+                    } else if meta.path == MAP {
+                        let value = meta.value()?;
+                        let list: syn::ExprArray = value.parse()?;
+                        for elem in list.elems {
+                            if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = elem {
+                                mapped_values.push(s.value());
+                            } else {
+                                return Err(Error::new_spanned(elem, "map values must be string literals"));
+                            }
                         }
                     }
                     Ok(())
@@ -61,6 +72,7 @@ pub fn get_xml_serde_enum_impl_block(input: DeriveInput) -> Result<TokenStream, 
             xml_value: xml_value_str,
             is_other: is_other_attr,
             other_type: other_inner_type,
+            mapped_values,
         });
     }
 
@@ -68,61 +80,63 @@ pub fn get_xml_serde_enum_impl_block(input: DeriveInput) -> Result<TokenStream, 
     let mut deserialize_arms = Vec::new();
     let mut other_arm_deserialize: Option<proc_macro2::TokenStream> = None;
 
-    for pv in &parsed_variants {
-        let variant_ident = &pv.ident;
-        let xml_value_lit = Lit::Str(syn::LitStr::new(&pv.xml_value, variant_ident.span()));
+    for variant in &parsed_variants {
+        let ident = &variant.ident;
+        let xml_value = &variant.xml_value;
+        let mapped_values = &variant.mapped_values;
 
-        if pv.is_other {
-            if let Some(ref inner_ty) = pv.other_type {
-                let type_is_string = match inner_ty {
-                    | Type::Path(type_path) => type_path
-                        .path
-                        .segments
-                        .last()
-                        .map_or(false, |seg| seg.ident == "String"),
-                    | _ => false,
-                };
-
-                if type_is_string {
-                    serialize_arms.push(quote! { Self::#variant_ident(s_val) => s_val.clone(), });
-                    other_arm_deserialize =
-                        Some(quote! { _ => Ok(Self::#variant_ident(s.to_string())) });
-                } else {
-                    // Assumes the type implements ToString for serialize and FromStr for deserialize
-                    serialize_arms
-                        .push(quote! { Self::#variant_ident(s_val) => s_val.to_string(), });
-                    other_arm_deserialize = Some(
-                        quote! { _ => Ok(Self::#variant_ident(s.parse::<#inner_ty>().map_err(|e| format!("Failed to parse '{}' as {}: {}", s, stringify!(#inner_ty), e.to_string()))?)) },
-                    );
-                }
-            } else {
-                // This case should have been caught earlier by the parser for `#[xmlserde(other)]`
-                return Err(Error::new_spanned(
-                    variant_ident,
-                    "#[xmlserde(other)] variant lacks a defined inner type.",
-                ));
-            }
+        // Add serialize arm
+        if variant.is_other {
+            serialize_arms.push(quote! {
+                Self::#ident(s) => s.clone(),
+            });
         } else {
-            serialize_arms.push(quote! { Self::#variant_ident => String::from(#xml_value_lit), });
-            deserialize_arms.push(quote! { #xml_value_lit => Ok(Self::#variant_ident), });
+            serialize_arms.push(quote! {
+                Self::#ident => #xml_value.to_string(),
+            });
+        }
+
+        // Add deserialize arm
+        if variant.is_other {
+            let other_type = variant.other_type.as_ref().unwrap();
+            other_arm_deserialize = Some(quote! {
+                _ => Self::#ident(<#other_type as ::xmlserde::XmlValue>::deserialize(s).unwrap()),
+            });
+        } else {
+            let mut match_arms = vec![quote! {
+                #xml_value => Self::#ident,
+            }];
+
+            // Add mapped values
+            for mapped_value in mapped_values {
+                match_arms.push(quote! {
+                    #mapped_value => Self::#ident,
+                });
+            }
+
+            deserialize_arms.push(quote! {
+                #(#match_arms)*
+            });
         }
     }
 
-    let deserialize_match_arms = if let Some(other_arm) = other_arm_deserialize {
+    let deserialize_arms = if let Some(other_arm) = other_arm_deserialize {
         quote! {
             #(#deserialize_arms)*
             #other_arm
         }
     } else {
-        // If no `other` arm, any unknown value is an error.
         quote! {
             #(#deserialize_arms)*
-            _ => Err(format!("Unknown value for {}: {}", stringify!(#enum_name), s)),
+            _ => panic!("unknown variant"),
         }
     };
 
-    let expanded = quote! {
-        impl xmlserde::XmlValue for #enum_name {
+    let ident = &input.ident;
+    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+
+    Ok(quote! {
+        impl #impl_generics ::xmlserde::XmlValue for #ident #type_generics #where_clause {
             fn serialize(&self) -> String {
                 match self {
                     #(#serialize_arms)*
@@ -130,12 +144,10 @@ pub fn get_xml_serde_enum_impl_block(input: DeriveInput) -> Result<TokenStream, 
             }
 
             fn deserialize(s: &str) -> Result<Self, String> {
-                match s {
-                    #deserialize_match_arms
-                }
+                Ok(match s {
+                    #deserialize_arms
+                })
             }
         }
-    };
-
-    Ok(expanded)
+    })
 }

@@ -1,10 +1,14 @@
+use quote::{format_ident, quote};
 use syn::DeriveInput;
 
 use crate::container::{self, Container, EleType, FieldsSummary, Generic, StructField};
 
 pub fn get_de_impl_block(input: DeriveInput) -> proc_macro2::TokenStream {
-    let container = Container::from_ast(&input, container::Derive::Deserialize);
-    container.validate();
+    let container = Container::from_ast(&input, container::Derive::Deserialize)
+        .expect("Failed to parse container");
+    if let Err(e) = container.validate() {
+        return syn::Error::new_spanned(&input, e.to_string()).to_compile_error();
+    }
     if container.is_enum() {
         get_de_enum_impl_block(container)
     } else {
@@ -154,7 +158,7 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
     } = summary;
     let get_children_tags = if !children.is_empty() || !untagged_enums.is_empty() {
         let names = children.iter().map(|f| {
-            let n = f.name.as_ref().expect("should have name");
+            let n = f.name.as_ref().unwrap_or_else(|| &f.mapped_names[0]);
             quote! {#n}
         });
         let untagged_enums = untagged_enums.iter().map(|f| {
@@ -179,7 +183,7 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
     let attr_len = attrs.len();
     let sfc_len = self_closed_children.len();
     let vec_init = get_vec_init(&children);
-    let attr_branches = attrs.into_iter().map(|a| attr_match_branch(a));
+    let attr_branches = attrs.into_iter().map(|a| get_attr_branch(&a));
     let child_branches = children_match_branch(&children, &untagged_enums, &untagged_structs);
     let sfc_branch = sfc_match_branch(self_closed_children);
     let ident = &container.original.ident;
@@ -346,29 +350,27 @@ fn get_fields_init(fields: &FieldsSummary) -> proc_macro2::TokenStream {
                     let mut #ident = #p();
                 }
             },
-            | None => {
-                match f.generic {
-                    | Generic::Vec(v) => {
-                        quote! {
-                            let mut #ident = Vec::<#v>::new();
-                        }
-                    },
-                    | Generic::Opt(opt) => {
-                        quote! {
-                            let mut #ident = Option::<#opt>::None;
-                        }
-                    },
-                    | Generic::Boxed(inner_ty) => {
-                        quote! {
-                            let mut #ident = Option::<Box<#inner_ty>>::None;
-                        }
-                    },
-                    | Generic::None => {
-                        quote! {
-                            let mut #ident = Option::<#ty>::None;
-                        }
-                    },
-                }
+            | None => match f.generic {
+                | Generic::Vec(v) => {
+                    quote! {
+                        let mut #ident = Vec::<#v>::new();
+                    }
+                },
+                | Generic::Opt(opt) => {
+                    quote! {
+                        let mut #ident = Option::<#opt>::None;
+                    }
+                },
+                | Generic::Boxed(inner_ty) => {
+                    quote! {
+                        let mut #ident = Option::<Box<#inner_ty>>::None;
+                    }
+                },
+                | Generic::None => {
+                    quote! {
+                        let mut #ident = Option::<#ty>::None;
+                    }
+                },
             },
         }
     });
@@ -496,10 +498,7 @@ fn get_deserialize_from_unparsed(children: &[StructField]) -> proc_macro2::Token
         }
     });
     let body = children.iter().map(|c| {
-        let name = c
-            .name
-            .as_ref()
-            .expect("types can not have recursive untagged fields");
+        let name = c.name.as_ref().unwrap_or_else(|| &c.mapped_names[0]);
         let original_type = &c.original.ty;
         let ident = c.original.ident.as_ref().unwrap();
         match &c.generic {
@@ -575,8 +574,10 @@ fn get_deserialize_from_unparsed(children: &[StructField]) -> proc_macro2::Token
 }
 
 fn get_vec_init(children: &[StructField]) -> proc_macro2::TokenStream {
-    let vec_inits = children.iter().filter(|c| c.generic.is_vec()).map(|c| {
-        match &c.vec_size {
+    let vec_inits = children
+        .iter()
+        .filter(|c| c.generic.is_vec())
+        .map(|c| match &c.vec_size {
             | Some(lit) => {
                 let vec_ty = &c.generic.get_vec().unwrap();
                 let ident = c.original.ident.as_ref().unwrap();
@@ -598,8 +599,7 @@ fn get_vec_init(children: &[StructField]) -> proc_macro2::TokenStream {
             | None => {
                 quote! {}
             },
-        }
-    });
+        });
     quote! {
         #(#vec_inits)*
     }
@@ -627,17 +627,23 @@ fn sfc_match_branch(fields: Vec<StructField>) -> proc_macro2::TokenStream {
     }
 }
 
-fn attr_match_branch(field: StructField) -> proc_macro2::TokenStream {
-    if !matches!(field.ty, EleType::Attr) {
-        panic!("")
-    }
+fn get_attr_branch(field: &StructField) -> proc_macro2::TokenStream {
+    let tag = field
+        .name
+        .as_ref()
+        .unwrap_or_else(|| &field.mapped_names[0]);
+    let mapped_tags = if field.name.is_none() && !field.mapped_names.is_empty() {
+        &field.mapped_names[1..]
+    } else {
+        &field.mapped_names[..]
+    };
+    let ident = field.original.ident.as_ref().unwrap();
     let t = &field.original.ty;
-    let tag = field.name.as_ref().expect("should have a field name");
-    let ident = field.original.ident.as_ref().expect("should have ident");
+
     if field.generic.is_opt() {
         let opt_ty = field.generic.get_opt().unwrap();
         quote! {
-            #tag => {
+            #tag #(| #mapped_tags)* => {
                 use xmlserde::{XmlValue, XmlDeserialize};
                 let s = String::from_utf8(attr.value.into_iter().map(|c| *c).collect()).unwrap();
                 match #opt_ty::deserialize(&s) {
@@ -645,8 +651,6 @@ fn attr_match_branch(field: StructField) -> proc_macro2::TokenStream {
                         #ident = Some(__v);
                     },
                     Err(_) => {
-                        // If we used format! here. It would panic!.
-                        // let err_msg = format!("xml value deserialize error: {:?} to {:?}", s, #t);
                         panic!("deserialize failed in attr opt")
                     },
                 }
@@ -659,7 +663,7 @@ fn attr_match_branch(field: StructField) -> proc_macro2::TokenStream {
             quote! {#ident = __v;}
         };
         quote! {
-            #tag => {
+            #tag #(| #mapped_tags)* => {
                 use xmlserde::{XmlValue, XmlDeserialize};
                 let __s = String::from_utf8(attr.value.into_iter().map(|c| *c).collect()).unwrap();
                 match #t::deserialize(&__s) {
@@ -667,12 +671,10 @@ fn attr_match_branch(field: StructField) -> proc_macro2::TokenStream {
                         #tt
                     },
                     Err(_) => {
-                        // If we used format! here. It would panic!.
-                        // let err_msg = format!("xml value deserialize error: {:?} to {:?}", s, #t);
                         panic!("deserialize failed in attr")
                     },
                 }
-            },
+            }
         }
     }
 }

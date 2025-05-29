@@ -99,8 +99,8 @@ mod tests {
         let result = xml_deserialize_from_str::<Font>(xml);
         match result {
             | Ok(f) => {
-                assert_eq!(f.bold, true);
-                assert_eq!(f.italic, true);
+                assert!(f.bold);
+                assert!(f.italic);
                 assert_eq!(f.size, 12.2);
             },
             | Err(_) => panic!(),
@@ -436,7 +436,7 @@ mod tests {
         }
 
         let xml = r#"<TestA><others age="16" name="Tom"><gf/><parent><f/><m name="Lisa">1999</m></parent></others></TestA>"#;
-        let p = xml_deserialize_from_str::<TestA>(&xml).unwrap();
+        let p = xml_deserialize_from_str::<TestA>(xml).unwrap();
         let ser = xml_serialize(p);
         assert_eq!(xml, ser);
     }
@@ -469,7 +469,7 @@ mod tests {
         }
 
         let xml = r#"<Root><a aAttr="3"/></Root>"#;
-        let p = xml_deserialize_from_str::<Root>(&xml).unwrap();
+        let p = xml_deserialize_from_str::<Root>(xml).unwrap();
         match p.dummy {
             | EnumA::A1(ref a) => assert_eq!(a.a_attr1, 3),
             | EnumA::B1(_) => panic!(),
@@ -506,7 +506,7 @@ mod tests {
         }
 
         let xml = r#"<Root><a aAttr="3"/><b bAttr="5"/><a aAttr="4"/></Root>"#;
-        let p = xml_deserialize_from_str::<Root>(&xml).unwrap();
+        let p = xml_deserialize_from_str::<Root>(xml).unwrap();
         assert_eq!(p.dummy.len(), 3);
         let ser = xml_serialize(p);
         assert_eq!(xml, &ser);
@@ -537,10 +537,10 @@ mod tests {
         }
 
         let xml = r#"<Root/>"#;
-        let p = xml_deserialize_from_str::<Root>(&xml).unwrap();
-        assert!(matches!(p.dummy, None));
+        let p = xml_deserialize_from_str::<Root>(xml).unwrap();
+        assert!(p.dummy.is_none());
         let xml = r#"<Root><a aAttr="3"/></Root>"#;
-        let p = xml_deserialize_from_str::<Root>(&xml).unwrap();
+        let p = xml_deserialize_from_str::<Root>(xml).unwrap();
         match p.dummy {
             | Some(EnumA::A1(ref a)) => assert_eq!(a.a_attr1, 3),
             | None => panic!(),
@@ -615,14 +615,14 @@ mod tests {
         }
 
         let xml = r#"<parameter><varargs /></parameter>"#;
-        let p = xml_deserialize_from_str::<Parameter>(&xml).unwrap();
+        let p = xml_deserialize_from_str::<Parameter>(xml).unwrap();
         assert!(matches!(p.ty, ParameterType::VarArgs));
 
         let expect = xml_serialize(p);
         assert_eq!(expect, "<parameter><varargs/></parameter>");
 
         let xml = r#"<parameter><type name="n"/></parameter>"#;
-        let p = xml_deserialize_from_str::<Parameter>(&xml).unwrap();
+        let p = xml_deserialize_from_str::<Parameter>(xml).unwrap();
         if let ParameterType::Type(t) = &p.ty {
             assert_eq!(t.name, "n")
         } else {
@@ -632,7 +632,7 @@ mod tests {
         assert_eq!(expect, xml);
 
         let xml = r#"<parameter>ttttt</parameter>"#;
-        let p = xml_deserialize_from_str::<Parameter>(&xml).unwrap();
+        let p = xml_deserialize_from_str::<Parameter>(xml).unwrap();
         assert!(matches!(p.ty, ParameterType::Text(_)));
         let expect = xml_serialize(p);
         assert_eq!(expect, xml);
@@ -665,10 +665,10 @@ mod tests {
             <text:span> text1 </text:span>
             <text:span>text2</text:span>
         </text:p>"#;
-        let text_p = xml_deserialize_from_str::<TextP>(&xml).unwrap();
+        let text_p = xml_deserialize_from_str::<TextP>(xml).unwrap();
         let content = &text_p.text_p_content;
         assert_eq!(content.len(), 2);
-        if let TextPContent::TextSpan(span) = content.get(0).unwrap() {
+        if let TextPContent::TextSpan(span) = content.first().unwrap() {
             assert_eq!(&span.t, " text1 ")
         } else {
             panic!("")
@@ -686,10 +686,10 @@ mod tests {
         );
 
         let xml = r#"<text:p>abcdefg</text:p>"#;
-        let text_p = xml_deserialize_from_str::<TextP>(&xml).unwrap();
+        let text_p = xml_deserialize_from_str::<TextP>(xml).unwrap();
         let content = &text_p.text_p_content;
         assert_eq!(content.len(), 1);
-        if let TextPContent::Text(s) = content.get(0).unwrap() {
+        if let TextPContent::Text(s) = content.first().unwrap() {
             assert_eq!(s, "abcdefg")
         } else {
             panic!("")
@@ -709,7 +709,7 @@ mod tests {
             pub name: String,
         }
         let xml = r#"<pet name="Chaplin" age="1"/>"#;
-        let _ = xml_deserialize_from_str::<Pet>(&xml).unwrap();
+        let _ = xml_deserialize_from_str::<Pet>(xml).unwrap();
     }
 
     #[test]
@@ -721,7 +721,7 @@ mod tests {
             pub name: String,
         }
         let xml = r#"<pet name="Chaplin" age="1"/>"#;
-        let _ = xml_deserialize_from_str::<Pet>(&xml).unwrap();
+        let _ = xml_deserialize_from_str::<Pet>(xml).unwrap();
     }
 
     #[test]
@@ -735,7 +735,7 @@ mod tests {
             pub name: String,
         }
         let xml = r#"<pet name="Chaplin"><weight/></pet>"#;
-        let _ = xml_deserialize_from_str::<Pet>(&xml).unwrap();
+        let _ = xml_deserialize_from_str::<Pet>(xml).unwrap();
     }
 
     #[test]
@@ -747,7 +747,7 @@ mod tests {
             pub name: String,
         }
         let xml = r#"<pet name="Chaplin"><weight/></pet>"#;
-        let _ = xml_deserialize_from_str::<Pet>(&xml).unwrap();
+        let _ = xml_deserialize_from_str::<Pet>(xml).unwrap();
     }
 
     // https://github.com/ImJeremyHe/xmlserde/issues/52
@@ -864,7 +864,7 @@ mod tests {
         }
 
         let xml = r#"<foo><a attr1="12"/><c attr2="200"/></foo>"#;
-        let foo = xml_deserialize_from_str::<Foo>(&xml).unwrap();
+        let foo = xml_deserialize_from_str::<Foo>(xml).unwrap();
         assert_eq!(foo.bar.a.attr1, 12);
         assert_eq!(foo.bar.c.attr2, 200);
 
@@ -875,13 +875,13 @@ mod tests {
             bar: Option<Bar>,
         }
         let xml = r#"<foo><a attr1="12"/><c attr2="200"/></foo>"#;
-        let foo = xml_deserialize_from_str::<FooOption>(&xml).unwrap();
+        let foo = xml_deserialize_from_str::<FooOption>(xml).unwrap();
         let bar = foo.bar.unwrap();
         assert_eq!(bar.a.attr1, 12);
         assert_eq!(bar.c.attr2, 200);
 
         let xml = r#"<foo>></foo>"#;
-        let foo = xml_deserialize_from_str::<FooOption>(&xml).unwrap();
+        let foo = xml_deserialize_from_str::<FooOption>(xml).unwrap();
         assert!(foo.bar.is_none());
     }
 
@@ -913,5 +913,163 @@ mod tests {
         pub struct A {}
         #[derive(Debug, XmlDeserialize, XmlSerialize)]
         pub struct CtTextParagraphProperties {}
+    }
+
+    #[test]
+    fn test_enum_map_attribute() {
+        #[derive(Debug, Clone, PartialEq, Eq, XmlSerdeEnum, Default)]
+        pub enum Status {
+            #[xmlserde(rename = "cat")]
+            Cat,
+            #[xmlserde(rename = "dog")]
+            Dog,
+            #[xmlserde(map = ["parrot", "pigeon"])]
+            Bird,
+            #[xmlserde(other)]
+            Other(String),
+            #[default]
+            Unknown,
+        }
+
+        // Test serialization
+        assert_eq!(Status::Cat.serialize(), "cat");
+        assert_eq!(Status::Dog.serialize(), "dog");
+        assert_eq!(Status::Bird.serialize(), "Bird");
+        assert_eq!(Status::Other("unknown".to_string()).serialize(), "unknown");
+
+        // Test deserialization
+        assert_eq!(Status::deserialize("cat").unwrap(), Status::Cat);
+        assert_eq!(Status::deserialize("dog").unwrap(), Status::Dog);
+        assert_eq!(Status::deserialize("parrot").unwrap(), Status::Bird);
+        assert_eq!(Status::deserialize("pigeon").unwrap(), Status::Bird);
+        assert_eq!(
+            Status::deserialize("unknown").unwrap(),
+            Status::Other("unknown".to_string())
+        );
+    }
+
+    #[test]
+    fn test_struct_map_attribute() {
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"status")]
+        struct Status {
+            #[xmlserde(map = [b"parrot", b"pigeon"], ty = "attr")]
+            bird: String,
+        }
+
+        // Test deserialization with parrot attribute
+        let xml = r#"<status parrot="talking"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, "talking");
+
+        // Test deserialization with pigeon attribute
+        let xml = r#"<status pigeon="flying"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, "flying");
+
+        // Test serialization - should only use the canonical name (first mapped name)
+        let status = Status {
+            bird: "talking".to_string(),
+        };
+        let xml = xml_serialize(status);
+        assert!(xml.contains("parrot=\"talking\""));
+        assert!(!xml.contains("pigeon=\"talking\""));
+    }
+
+    #[test]
+    fn test_struct_map_attribute_optional() {
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"status")]
+        struct Status {
+            #[xmlserde(map = [b"parrot", b"pigeon"], ty = "attr")]
+            bird: Option<String>,
+        }
+
+        // Test deserialization with parrot attribute
+        let xml = r#"<status parrot="talking"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, Some("talking".to_string()));
+
+        // Test deserialization with pigeon attribute
+        let xml = r#"<status pigeon="flying"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, Some("flying".to_string()));
+
+        // Test deserialization with no attributes
+        let xml = r#"<status></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, None);
+
+        // Test serialization - should only use the canonical name (first mapped name)
+        let status = Status {
+            bird: Some("talking".to_string()),
+        };
+        let xml = xml_serialize(status);
+        assert!(xml.contains("parrot=\"talking\""));
+        assert!(!xml.contains("pigeon=\"talking\""));
+
+        // Test serialization with None
+        let status = Status { bird: None };
+        let xml = xml_serialize(status);
+        assert!(!xml.contains("parrot"));
+        assert!(!xml.contains("pigeon"));
+    }
+
+    #[test]
+    fn test_struct_map_attribute_with_default() {
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"status")]
+        struct Status {
+            #[xmlserde(map = [b"parrot", b"pigeon"], ty = "attr", default = "default_bird")]
+            bird: String,
+        }
+
+        fn default_bird() -> String {
+            "unknown".to_string()
+        }
+
+        // Test deserialization with parrot attribute
+        let xml = r#"<status parrot="talking"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, "talking");
+
+        // Test deserialization with pigeon attribute
+        let xml = r#"<status pigeon="flying"></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, "flying");
+
+        // Test deserialization with no attributes (should use default)
+        let xml = r#"<status></status>"#;
+        let status = xml_deserialize_from_str::<Status>(xml).unwrap();
+        assert_eq!(status.bird, "unknown");
+
+        // Test serialization - should only use the canonical name (first mapped name)
+        let status = Status {
+            bird: "talking".to_string(),
+        };
+        let xml = xml_serialize(status);
+        assert!(xml.contains("parrot=\"talking\""));
+        assert!(!xml.contains("pigeon=\"talking\""));
+
+        // Test serialization with default value
+        let status = Status {
+            bird: "unknown".to_string(),
+        };
+        let xml = xml_serialize(status);
+        assert!(!xml.contains("parrot"));
+        assert!(!xml.contains("pigeon"));
+
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"status")]
+        struct Status2 {
+            #[xmlserde(map = [b"pigeon", b"parrot"], ty = "attr", default = "default_bird")]
+            bird: String,
+        }
+        let status2 = Status2 {
+            bird: "cooing".to_string(),
+        };
+        let xml = xml_serialize(status2);
+        assert!(!xml.contains("parrot"));
+        assert!(xml.contains("pigeon=\"cooing\""));
     }
 }

@@ -2,14 +2,41 @@ use proc_macro2::{Group, Span, TokenStream, TokenTree};
 use syn::parse::{self, Parse};
 use syn::punctuated::Punctuated;
 use syn::token::Comma;
-use syn::Meta::Path;
 use syn::Meta::{self, NameValue};
 use syn::Variant;
 
 use crate::symbol::{
-    DEFAULT, DENY_UNKNOWN, NAME, ROOT, SKIP_SERIALIZING, TYPE, VEC_SIZE, WITH_CUSTOM_NS, WITH_NS,
-    XML_SERDE,
+    DEFAULT, DENY_UNKNOWN, MAP, NAME, ROOT, SKIP_SERIALIZING, TYPE, TYPE_ATTR, TYPE_CHILD,
+    TYPE_SFC, TYPE_TEXT, TYPE_UNTAG, TYPE_UNTAGGED_ENUM, TYPE_UNTAGGED_STRUCT, VEC_SIZE,
+    WITH_CUSTOM_NS, WITH_NS, XML_SERDE,
 };
+
+#[derive(Debug)]
+pub enum ContainerError {
+    UnionNotSupported,
+    InvalidVariantAttributes(String),
+    InvalidFieldAttributes(String),
+    InvalidContainerAttributes(String),
+    MissingTypeAttribute(String),
+    InvalidTypeValue(String),
+    InvalidAttributeName(String, String), // (field_name, invalid_attr_name)
+}
+
+impl std::fmt::Display for ContainerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ContainerError::UnionNotSupported => write!(f, "Only struct and enum types are supported, union is not supported"),
+            ContainerError::InvalidVariantAttributes(msg) => write!(f, "Invalid variant attributes: {}", msg),
+            ContainerError::InvalidFieldAttributes(msg) => write!(f, "Invalid field attributes: {}", msg),
+            ContainerError::InvalidContainerAttributes(msg) => write!(f, "Invalid container attributes: {}", msg),
+            ContainerError::MissingTypeAttribute(field) => write!(f, "Field '{}' is missing the required 'type' attribute. Please specify the type using #[xmlserde(ty = \"...\")]", field),
+            ContainerError::InvalidTypeValue(field) => write!(f, "Field '{}' has an invalid type value. Valid types are: attr, child, text, untag, untagged_enum, untagged_struct", field),
+            ContainerError::InvalidAttributeName(field, attr) => write!(f, "Field '{}' has an invalid attribute name '{}'. Did you mean 'name' instead of '{}'?", field, attr, attr),
+        }
+    }
+}
+
+impl std::error::Error for ContainerError {}
 
 pub struct Container<'a> {
     pub struct_fields: Vec<StructField<'a>>, // Struct fields
@@ -26,92 +53,133 @@ impl<'a> Container<'a> {
         !self.enum_variants.is_empty()
     }
 
-    pub fn validate(&self) {
+    pub fn validate(&self) -> Result<(), ContainerError> {
         if self.root.is_some() && self.is_enum() {
-            panic!("for clarity, enum should not have the root attribute. please use a struct to wrap the enum and set its type to untag")
+            return Err(ContainerError::InvalidContainerAttributes(
+                "for clarity, enum should not have the root attribute. please use a struct to wrap the enum and set its type to untag".to_string()
+            ));
         }
         if self.deny_unknown && self.is_enum() {
-            panic!("`deny_unknown_fields` is not supported in enum type")
+            return Err(ContainerError::InvalidContainerAttributes(
+                "`deny_unknown_fields` is not supported in enum type".to_string(),
+            ));
         }
 
-        self.struct_fields.iter().for_each(|f| f.validate());
+        for field in &self.struct_fields {
+            field.validate()?;
+        }
+        Ok(())
     }
 
-    pub fn from_ast(item: &'a syn::DeriveInput, _derive: Derive) -> Container<'a> {
-        let mut with_ns = Option::<syn::LitByteStr>::None;
-        let mut custom_ns = Vec::<(syn::LitByteStr, syn::LitByteStr)>::new();
-        let mut root = Option::<syn::LitByteStr>::None;
+    fn parse_with_ns(meta: &syn::Meta) -> Option<syn::LitByteStr> {
+        let NameValue(m) = meta else { return None };
+        if m.path != WITH_NS {
+            return None;
+        }
+        get_lit_byte_str(&m.value).ok().cloned()
+    }
+
+    fn parse_root(meta: &syn::Meta) -> Option<syn::LitByteStr> {
+        if let NameValue(m) = meta {
+            if m.path == ROOT {
+                if let Ok(s) = get_lit_byte_str(&m.value) {
+                    return Some(s.clone());
+                }
+            }
+        }
+        None
+    }
+
+    fn parse_custom_ns(meta: &syn::Meta) -> Option<(syn::LitByteStr, syn::LitByteStr)> {
+        let Meta::List(l) = meta else { return None };
+        if l.path != WITH_CUSTOM_NS {
+            return None;
+        }
+        let strs = l
+            .parse_args_with(Punctuated::<syn::LitByteStr, Comma>::parse_terminated)
+            .ok()?;
+        let mut iter = strs.iter();
+        let first = iter.next()?;
+        let second = iter.next()?;
+        if iter.next().is_some() {
+            return None;
+        }
+        Some((first.clone(), second.clone()))
+    }
+
+    fn parse_container_attrs(item: &'a syn::DeriveInput) -> ContainerAttrs {
+        let mut with_ns = None;
+        let mut custom_ns = Vec::new();
+        let mut root = None;
         let mut deny_unknown = false;
+
         for meta_item in item
             .attrs
             .iter()
             .flat_map(get_xmlserde_meta_items)
             .flatten()
         {
-            match meta_item {
-                | NameValue(m) if m.path == WITH_NS => {
-                    if let Ok(s) = get_lit_byte_str(&m.value) {
-                        with_ns = Some(s.clone());
-                    }
-                },
-                | NameValue(m) if m.path == ROOT => {
-                    let s = get_lit_byte_str(&m.value).expect("parse root failed");
-                    root = Some(s.clone());
-                },
-                | Meta::Path(p) if p == DENY_UNKNOWN => {
+            if let Some(ns) = Self::parse_with_ns(&meta_item) {
+                with_ns = Some(ns);
+            } else if let Some(r) = Self::parse_root(&meta_item) {
+                root = Some(r);
+            } else if let Meta::Path(p) = &meta_item {
+                if p == DENY_UNKNOWN {
                     deny_unknown = true;
-                },
-                | Meta::List(l) if l.path == WITH_CUSTOM_NS => {
-                    let strs = l
-                        .parse_args_with(Punctuated::<syn::LitByteStr, Comma>::parse_terminated)
-                        .unwrap();
-                    let mut iter = strs.iter();
-                    let first = iter.next().expect("with_custom_ns should have 2 arguments");
-                    let second = iter.next().expect("with_custom_ns should have 2 arguments");
-                    if iter.next().is_some() {
-                        panic!("with_custom_ns should have 2 arguments")
-                    }
-                    custom_ns.push((first.clone(), second.clone()));
-                },
-                | _ => panic!("unexpected"),
+                }
+            } else if let Some(ns_pair) = Self::parse_custom_ns(&meta_item) {
+                custom_ns.push(ns_pair);
             }
         }
+
+        ContainerAttrs {
+            with_ns,
+            custom_ns,
+            root,
+            deny_unknown,
+        }
+    }
+
+    pub fn from_ast(
+        item: &'a syn::DeriveInput,
+        _derive: Derive,
+    ) -> Result<Container<'a>, ContainerError> {
+        let attrs = Self::parse_container_attrs(item);
+
         match &item.data {
             | syn::Data::Struct(ds) => {
                 let fields = ds
                     .fields
                     .iter()
                     .map(StructField::from_ast)
-                    .filter(|f| f.is_some())
-                    .flatten()
-                    .collect::<Vec<_>>();
-                Container {
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Container {
                     struct_fields: fields,
                     enum_variants: vec![],
                     original: item,
-                    with_ns,
-                    custom_ns,
-                    root,
-                    deny_unknown,
-                }
+                    with_ns: attrs.with_ns,
+                    custom_ns: attrs.custom_ns,
+                    root: attrs.root,
+                    deny_unknown: attrs.deny_unknown,
+                })
             },
             | syn::Data::Enum(e) => {
                 let variants = e
                     .variants
                     .iter()
                     .map(EnumVariant::from_ast)
-                    .collect::<Vec<_>>();
-                Container {
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Container {
                     struct_fields: vec![],
                     enum_variants: variants,
                     original: item,
-                    with_ns,
-                    custom_ns,
-                    root,
-                    deny_unknown,
-                }
+                    with_ns: attrs.with_ns,
+                    custom_ns: attrs.custom_ns,
+                    root: attrs.root,
+                    deny_unknown: attrs.deny_unknown,
+                })
             },
-            | syn::Data::Union(_) => panic!("Only support struct and enum type, union is found"),
+            | syn::Data::Union(_) => Err(ContainerError::UnionNotSupported),
         }
     }
 }
@@ -151,6 +219,7 @@ impl<'a> FieldsSummary<'a> {
 pub struct StructField<'a> {
     pub ty: EleType,
     pub name: Option<syn::LitByteStr>,
+    pub mapped_names: Vec<syn::LitByteStr>,
     pub skip_serializing: bool,
     pub default: Option<syn::ExprPath>,
     pub original: &'a syn::Field,
@@ -159,80 +228,156 @@ pub struct StructField<'a> {
 }
 
 impl<'a> StructField<'a> {
-    pub fn validate(&self) {
-        let untagged = match self.ty {
-            | EleType::Untag => true,
-            | EleType::UntaggedEnum => true,
-            | EleType::UntaggedStruct => true,
-            | _ => false,
-        };
+    pub fn validate(&self) -> Result<(), ContainerError> {
+        let untagged = matches!(
+            self.ty,
+            EleType::Untag | EleType::UntaggedEnum | EleType::UntaggedStruct
+        );
         if untagged && self.name.is_some() {
-            panic!("untagged types doesn't need a name")
+            return Err(ContainerError::InvalidFieldAttributes(
+                "untagged types doesn't need a name".to_string(),
+            ));
         }
+        Ok(())
     }
 
-    pub fn from_ast(f: &'a syn::Field) -> Option<Self> {
-        let mut name = Option::<syn::LitByteStr>::None;
-        let mut skip_serializing = false;
-        let mut default = Option::<syn::ExprPath>::None;
-        let mut ty = Option::<EleType>::None;
-        let mut vec_size = Option::<syn::Lit>::None;
-        let generic = get_generics(&f.ty);
-        for meta_item in f.attrs.iter().flat_map(get_xmlserde_meta_items).flatten() {
-            match meta_item {
-                | NameValue(m) if m.path == NAME => {
-                    if let Ok(s) = get_lit_byte_str(&m.value) {
-                        name = Some(s.clone());
-                    }
-                },
-                | NameValue(m) if m.path == TYPE => {
-                    if let Ok(s) = get_lit_str(&m.value) {
-                        let t = match s.value().as_str() {
-                            | "attr" => EleType::Attr,
-                            | "child" => EleType::Child,
-                            | "text" => EleType::Text,
-                            | "sfc" => EleType::SelfClosedChild,
-                            | "untag" => EleType::Untag, /* todo: generate a deprecate function */
-                            // to let users know
-                            | "untagged_enum" => EleType::UntaggedEnum,
-                            | "untagged_struct" => EleType::UntaggedStruct,
-                            | _ => panic!("invalid type"),
-                        };
-                        ty = Some(t);
-                    }
-                },
-                | NameValue(m) if m.path == VEC_SIZE => {
-                    if let syn::Expr::Lit(lit) = m.value {
-                        match lit.lit {
-                            | syn::Lit::Str(_) | syn::Lit::Int(_) => {
-                                vec_size = Some(lit.lit);
-                            },
-                            | _ => panic!(),
-                        }
-                    } else {
-                        panic!()
-                    }
-                },
-                | Path(word) if word == SKIP_SERIALIZING => {
-                    skip_serializing = true;
-                },
-                | NameValue(m) if m.path == DEFAULT => {
-                    let path = parse_lit_into_expr_path(&m.value)
-                        .expect("parse default path")
-                        .clone();
-                    default = Some(path);
-                },
-                | _ => panic!("unexpected"),
+    fn parse_type(meta: &syn::Meta, field_name: &str) -> Result<EleType, ContainerError> {
+        if let NameValue(m) = meta {
+            if m.path == TYPE {
+                if let Ok(s) = get_lit_str(&m.value) {
+                    return match s.value().as_str() {
+                        | s if s == TYPE_ATTR.value() => Ok(EleType::Attr),
+                        | s if s == TYPE_CHILD.value() => Ok(EleType::Child),
+                        | s if s == TYPE_TEXT.value() => Ok(EleType::Text),
+                        | s if s == TYPE_SFC.value() => Ok(EleType::SelfClosedChild),
+                        | s if s == TYPE_UNTAG.value() => Ok(EleType::Untag),
+                        | s if s == TYPE_UNTAGGED_ENUM.value() => Ok(EleType::UntaggedEnum),
+                        | s if s == TYPE_UNTAGGED_STRUCT.value() => Ok(EleType::UntaggedStruct),
+                        | _ => Err(ContainerError::InvalidTypeValue(field_name.to_string())),
+                    };
+                }
             }
         }
-        let ty = ty?;
-        Some(StructField {
-            ty,
+        Err(ContainerError::MissingTypeAttribute(field_name.to_string()))
+    }
+
+    fn parse_vec_size(meta: &syn::Meta) -> Option<syn::Lit> {
+        if let NameValue(m) = meta {
+            if m.path == VEC_SIZE {
+                if let syn::Expr::Lit(lit) = &m.value {
+                    match &lit.lit {
+                        | syn::Lit::Str(_) | syn::Lit::Int(_) => return Some(lit.lit.clone()),
+                        | _ => return None,
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn parse_default(meta: &syn::Meta) -> Option<syn::ExprPath> {
+        let NameValue(m) = meta else {
+            return None;
+        };
+        if m.path != DEFAULT {
+            return None;
+        }
+        parse_lit_into_expr_path(&m.value).ok()
+    }
+
+    fn parse_field_attrs(f: &'a syn::Field) -> Result<FieldAttrs, ContainerError> {
+        let field_name = f
+            .ident
+            .as_ref()
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "unnamed".to_string());
+        let mut name = None;
+        let mut mapped_names = Vec::new();
+        let mut skip_serializing = false;
+        let mut default = None;
+        let mut ty = None;
+        let mut vec_size = None;
+
+        for meta_item in f.attrs.iter().flat_map(get_xmlserde_meta_items).flatten() {
+            match &meta_item {
+                | Meta::NameValue(m) => {
+                    if m.path == NAME {
+                        if let Ok(s) = get_lit_byte_str(&m.value) {
+                            name = Some(s.clone());
+                        }
+                    } else if m.path == MAP {
+                        if let syn::Expr::Array(array) = &m.value {
+                            for elem in &array.elems {
+                                if let syn::Expr::Lit(syn::ExprLit {
+                                    lit: syn::Lit::ByteStr(s),
+                                    ..
+                                }) = elem
+                                {
+                                    mapped_names.push(s.clone());
+                                } else {
+                                    return Err(ContainerError::InvalidFieldAttributes(
+                                        "map values must be byte string literals".to_string(),
+                                    ));
+                                }
+                            }
+                        } else {
+                            return Err(ContainerError::InvalidFieldAttributes(
+                                "map attribute must be an array of byte string literals"
+                                    .to_string(),
+                            ));
+                        }
+                    } else if m.path == TYPE {
+                        if let Ok(t) = Self::parse_type(&meta_item, &field_name) {
+                            ty = Some(t);
+                        }
+                    } else if m.path == VEC_SIZE {
+                        if let Some(vs) = Self::parse_vec_size(&meta_item) {
+                            vec_size = Some(vs);
+                        }
+                    } else if m.path == DEFAULT {
+                        if let Some(d) = Self::parse_default(&meta_item) {
+                            default = Some(d);
+                        }
+                    } else {
+                        // Check for common typos
+                        let attr_name = m.path.get_ident().map(|i| i.to_string());
+                        if let Some(attr) = attr_name {
+                            if attr == "names" {
+                                return Err(ContainerError::InvalidAttributeName(field_name, attr));
+                            }
+                        }
+                    }
+                },
+                | Meta::Path(p) if *p == SKIP_SERIALIZING => {
+                    skip_serializing = true;
+                },
+                | _ => {},
+            }
+        }
+
+        let ty = ty.ok_or_else(|| ContainerError::MissingTypeAttribute(field_name.clone()))?;
+        Ok(FieldAttrs {
             name,
+            mapped_names,
             skip_serializing,
             default,
-            original: f,
+            ty,
             vec_size,
+        })
+    }
+
+    pub fn from_ast(f: &'a syn::Field) -> Result<Self, ContainerError> {
+        let attrs = Self::parse_field_attrs(f)?;
+        let generic = get_generics(&f.ty);
+
+        Ok(StructField {
+            ty: attrs.ty,
+            name: attrs.name,
+            mapped_names: attrs.mapped_names,
+            skip_serializing: attrs.skip_serializing,
+            default: attrs.default,
+            original: f,
+            vec_size: attrs.vec_size,
             generic,
         })
     }
@@ -260,48 +405,92 @@ pub struct EnumVariant<'a> {
 }
 
 impl<'a> EnumVariant<'a> {
-    pub fn from_ast(v: &'a Variant) -> Self {
-        let mut name = Option::<syn::LitByteStr>::None;
+    fn parse_type(meta: &syn::Meta) -> Option<EleType> {
+        if let NameValue(m) = meta {
+            if m.path == TYPE {
+                if let Ok(s) = get_lit_str(&m.value) {
+                    return match s.value().as_str() {
+                        | s if s == TYPE_CHILD.value() => Some(EleType::Child),
+                        | s if s == TYPE_TEXT.value() => Some(EleType::Text),
+                        | _ => None,
+                    };
+                }
+            }
+        }
+        None
+    }
+
+    fn validate_variant_fields(
+        fields: &syn::Fields,
+        ele_type: &EleType,
+        name: Option<&syn::LitByteStr>,
+    ) -> Result<(), String> {
+        if fields.len() > 1 {
+            return Err("only support 1 field".to_string());
+        }
+
+        match ele_type {
+            | EleType::Text => {
+                if name.is_some() {
+                    return Err("should omit the `name`".to_string());
+                }
+            },
+            | _ => {
+                if name.is_none() {
+                    return Err("should have name".to_string());
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    fn parse_variant_attrs(v: &'a Variant) -> Result<(Option<syn::LitByteStr>, EleType), String> {
+        let mut name = None;
         let mut ele_type = EleType::Child;
+
         for meta_item in v.attrs.iter().flat_map(get_xmlserde_meta_items).flatten() {
-            match meta_item {
-                | NameValue(m) if m.path == NAME => {
-                    if let Ok(s) = get_lit_byte_str(&m.value) {
-                        name = Some(s.clone());
+            match &meta_item {
+                | Meta::NameValue(m) => {
+                    if m.path == NAME {
+                        if let Ok(s) = get_lit_byte_str(&m.value) {
+                            name = Some(s.clone());
+                        }
+                    } else if m.path == TYPE {
+                        if let Some(t) = Self::parse_type(&meta_item) {
+                            ele_type = t;
+                        }
+                    } else {
+                        // Check for common typos
+                        let attr_name = m.path.get_ident().map(|i| i.to_string());
+                        if let Some(attr) = attr_name {
+                            if attr == "names" {
+                                return Err(format!("Invalid attribute name '{}'. Did you mean 'name' instead of '{}'?", attr, attr));
+                            }
+                        }
                     }
                 },
-                | NameValue(m) if m.path == TYPE => {
-                    if let Ok(s) = get_lit_str(&m.value) {
-                        let t = match s.value().as_str() {
-                            | "child" => EleType::Child,
-                            | "text" => EleType::Text,
-                            | _ => panic!("invalid type in enum, should be `text` or `child` only"),
-                        };
-                        ele_type = t;
-                    }
-                },
-                | _ => panic!("unexpected attribute"),
+                | _ => {},
             }
         }
-        if v.fields.len() > 1 {
-            panic!("only support 1 field");
-        }
-        if matches!(ele_type, EleType::Text) {
-            if name.is_some() {
-                panic!("should omit the `name`");
-            }
-        } else if name.is_none() {
-            panic!("should have name")
-        }
-        let field = &v.fields.iter().next();
+
+        Self::validate_variant_fields(&v.fields, &ele_type, name.as_ref())?;
+        Ok((name, ele_type))
+    }
+
+    pub fn from_ast(v: &'a Variant) -> Result<Self, ContainerError> {
+        let (name, ele_type) =
+            Self::parse_variant_attrs(v).map_err(ContainerError::InvalidVariantAttributes)?;
+        let field = v.fields.iter().next();
         let ty = field.map(|t| &t.ty);
         let ident = &v.ident;
-        EnumVariant {
+
+        Ok(EnumVariant {
             name,
             ty,
             ident,
             ele_type,
-        }
+        })
     }
 }
 
@@ -326,7 +515,6 @@ pub enum EleType {
     SelfClosedChild,
     /// Deprecated, use `UntaggedEnum`
     Untag,
-
     UntaggedEnum,
     UntaggedStruct,
 }
@@ -398,63 +586,46 @@ fn respan_token(mut token: TokenTree, span: Span) -> TokenTree {
     token
 }
 
-pub(crate) fn get_generics(t: &syn::Type) -> Generic {
-    match t {
-        | syn::Type::Path(p) => {
-            let path = &p.path;
-            match path.segments.last() {
-                | Some(seg) => {
-                    if seg.ident == "Vec" {
-                        match &seg.arguments {
-                            | syn::PathArguments::AngleBracketed(a) => {
-                                let args = &a.args;
-                                if args.len() != 1 {
-                                    Generic::None
-                                } else if let Some(syn::GenericArgument::Type(t)) = args.first() {
-                                    Generic::Vec(t)
-                                } else {
-                                    Generic::None
-                                }
-                            },
-                            | _ => Generic::None,
-                        }
-                    } else if seg.ident == "Option" {
-                        match &seg.arguments {
-                            | syn::PathArguments::AngleBracketed(a) => {
-                                let args = &a.args;
-                                if args.len() != 1 {
-                                    Generic::None
-                                } else if let Some(syn::GenericArgument::Type(t)) = args.first() {
-                                    Generic::Opt(t)
-                                } else {
-                                    Generic::None
-                                }
-                            },
-                            | _ => Generic::None,
-                        }
-                    } else if seg.ident == "Box" {
-                        match &seg.arguments {
-                            | syn::PathArguments::AngleBracketed(a) => {
-                                let args = &a.args;
-                                if args.len() != 1 {
-                                    Generic::None
-                                } else if let Some(syn::GenericArgument::Type(t)) = args.first() {
-                                    Generic::Boxed(t)
-                                } else {
-                                    Generic::None
-                                }
-                            },
-                            | _ => Generic::None,
-                        }
-                    } else {
-                        Generic::None
-                    }
-                },
-                | None => Generic::None,
-            }
-        },
-        | _ => Generic::None,
+fn get_generic_type_from_args(
+    args: &Punctuated<syn::GenericArgument, Comma>,
+) -> Option<&syn::Type> {
+    if args.len() != 1 {
+        return None;
     }
+    if let Some(syn::GenericArgument::Type(t)) = args.first() {
+        Some(t)
+    } else {
+        None
+    }
+}
+
+fn get_generic_type<'a>(path: &'a syn::Path, type_name: &str) -> Option<&'a syn::Type> {
+    let seg = path.segments.last()?;
+    if seg.ident != type_name {
+        return None;
+    }
+    match &seg.arguments {
+        | syn::PathArguments::AngleBracketed(a) => get_generic_type_from_args(&a.args),
+        | _ => None,
+    }
+}
+
+pub(crate) fn get_generics(t: &syn::Type) -> Generic {
+    let path = match t {
+        | syn::Type::Path(p) => &p.path,
+        | _ => return Generic::None,
+    };
+
+    if let Some(ty) = get_generic_type(path, "Vec") {
+        return Generic::Vec(ty);
+    }
+    if let Some(ty) = get_generic_type(path, "Option") {
+        return Generic::Opt(ty);
+    }
+    if let Some(ty) = get_generic_type(path, "Box") {
+        return Generic::Boxed(ty);
+    }
+    Generic::None
 }
 
 pub enum Generic<'a> {
@@ -506,4 +677,22 @@ impl Generic<'_> {
             | _ => None,
         }
     }
+}
+
+// Define struct for container attributes
+pub struct ContainerAttrs {
+    pub with_ns: Option<syn::LitByteStr>,
+    pub custom_ns: Vec<(syn::LitByteStr, syn::LitByteStr)>,
+    pub root: Option<syn::LitByteStr>,
+    pub deny_unknown: bool,
+}
+
+// Define struct for field attributes
+pub struct FieldAttrs {
+    pub name: Option<syn::LitByteStr>,
+    pub mapped_names: Vec<syn::LitByteStr>,
+    pub skip_serializing: bool,
+    pub default: Option<syn::ExprPath>,
+    pub ty: EleType,
+    pub vec_size: Option<syn::Lit>,
 }
