@@ -1,7 +1,10 @@
 use quote::{format_ident, quote};
 use syn::DeriveInput;
 
-use crate::container::{self, Container, EleType, FieldsSummary, Generic, StructField};
+use crate::{
+    case::parse_case,
+    container::{self, Container, EleType, FieldsSummary, Generic, StructField},
+};
 
 pub fn get_de_impl_block(input: DeriveInput) -> proc_macro2::TokenStream {
     let container = Container::from_ast(&input, container::Derive::Deserialize)
@@ -93,6 +96,17 @@ pub fn get_de_enum_impl_block(container: Container) -> proc_macro2::TokenStream 
             quote! {#name}
         });
     let exact_tags = children_branches!(attrs, is_empty);
+    let get_roots = if !container.roots.is_empty() {
+        let roots = container.get_root_names();
+        quote! {
+            fn de_roots() -> Vec<&'static [u8]> {
+                vec![#(#roots),*]
+            }
+        }
+    } else {
+        quote! {}
+    };
+    let rename_all = rename_all(&container);
     quote! {
         #[allow(unused_assignments)]
         impl #impl_generics ::xmlserde::XmlDeserialize for #ident #type_generics #where_clause {
@@ -139,6 +153,9 @@ pub fn get_de_enum_impl_block(container: Container) -> proc_macro2::TokenStream 
             fn __is_enum() -> bool {
                 true
             }
+
+            #get_roots
+            #rename_all
         }
     }
 }
@@ -159,7 +176,7 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
     let get_children_tags = if !children.is_empty() || !untagged_enums.is_empty() {
         let container = container.clone();
         let names = children.iter().map(|f| {
-            let n = container.get_field_name(&f).unwrap_or_else(|| {
+            let n = container.get_field_name(f).unwrap_or_else(|| {
                 let ident = f
                     .original
                     .ident
@@ -199,16 +216,6 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
     let ident = &container.original.ident;
     let (impl_generics, type_generics, where_clause) = container.original.generics.split_for_impl();
     let text_branch = text.map(text_match_branch);
-    let get_root = if let Some(r) = &container.root {
-        quote! {
-            fn de_root() -> Option<&'static [u8]> {
-                Some(#r)
-            }
-        }
-    } else {
-        quote! {}
-    };
-
     // Only those structs with only children can be untagged
     let deserialize_from_unparsed =
         if !children.is_empty() && attr_len == 0 && sfc_len == 0 && untagged_enums.is_empty() {
@@ -234,6 +241,38 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
             #encounter_unknown
         }
     };
+
+    // Get the transformed root names for comparison
+    let root_names = container.get_root_names();
+    let always_emit_roots = !container.roots.is_empty();
+    let root_comparison = if always_emit_roots {
+        let root_names_refs: Vec<_> = root_names.iter().collect();
+        quote! {
+            let valid_roots: &[&[u8]] = &[#(#root_names_refs),*];
+            if !valid_roots.iter().any(|r| r.eq_ignore_ascii_case(tag)) {
+                let valid_roots_str: Vec<String> = valid_roots.iter()
+                    .map(|r| String::from_utf8_lossy(r).to_string())
+                    .collect();
+                let received_tag = String::from_utf8_lossy(tag).to_string();
+                panic!("Expected one of root tags {:?}, got {:?}", valid_roots_str, received_tag);
+            }
+        }
+    } else {
+        quote! {}
+    };
+    let get_roots = if always_emit_roots {
+        let root_names_refs: Vec<_> = root_names.iter().collect();
+        quote! {
+            fn de_roots() -> Vec<&'static [u8]> {
+                vec![#(#root_names_refs),*]
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let rename_all = rename_all(&container);
+
     quote! {
         #[allow(unused_assignments)]
         impl #impl_generics ::xmlserde::XmlDeserialize for #ident #type_generics #where_clause {
@@ -243,6 +282,7 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
                 attrs: ::xmlserde::quick_xml::events::attributes::Attributes,
                 is_empty: bool,
             ) -> Self {
+                #root_comparison
                 #fields_init
                 attrs.into_iter().for_each(|attr| {
                     if let Ok(attr) = attr {
@@ -279,11 +319,11 @@ pub fn get_de_struct_impl_block(container: Container) -> proc_macro2::TokenStrea
                     #result
                 }
             }
-            #get_root
+            #get_roots
+            #rename_all
             #get_children_tags
             #deserialize_from_unparsed
         }
-
     }
 }
 
@@ -890,55 +930,70 @@ fn children_match_branch(
     }
     let mut branches = vec![];
     fields.iter().for_each(|f| {
-        let tag = container
-            .get_field_name(f)
-            .expect("Field must have a name, mapped_names, or be covered by rename_all");
-        let mapped_tags = if f.name.is_none() && !f.mapped_names.is_empty() {
-            &f.mapped_names[1..]
-        } else {
-            &f.mapped_names[..]
-        };
         let ident = f.original.ident.as_ref().unwrap();
         let t = &f.original.ty;
+
+        let type_for_is_enum_check = match &f.generic {
+            Generic::Opt(inner_ty) | Generic::Boxed(inner_ty) | Generic::Vec(inner_ty) => quote! { #inner_ty },
+            Generic::None => quote! { #t },
+        };
+
+        let field_tag_name = container.get_field_name(f).unwrap_or_else(|| {
+            let ident_str = f.original.ident.as_ref().map(|i| i.to_string()).unwrap_or_else(|| "<unnamed>".to_string());
+            panic!("No name or mapped_names for field: {} in children_match_branch", ident_str)
+        });
+
         let branch = match f.generic {
-            | Generic::Vec(vec_ty) => {
+            Generic::Vec(ref vec_ty) => {
                 quote! {
-                    #tag #(| #mapped_tags)* => {
-                        let __ele = #vec_ty::deserialize(#tag, reader, s.attributes(), is_empty);
+                    _tag if #type_for_is_enum_check::__is_enum() && _tag == #field_tag_name.as_ref() => {
+                        let __ele = <#vec_ty as ::xmlserde::XmlDeserialize>::deserialize(_tag, reader, s.attributes(), is_empty);
+                        #ident.push(__ele);
+                    }
+                    _tag if !(#type_for_is_enum_check::__is_enum()) && _tag == #field_tag_name.as_ref() => {
+                        let __ele = <#vec_ty as ::xmlserde::XmlDeserialize>::deserialize(_tag, reader, s.attributes(), is_empty);
                         #ident.push(__ele);
                     }
                 }
             },
-            | Generic::Opt(opt_ty) => {
+            Generic::Opt(ref opt_ty) => {
                 quote! {
-                    #tag #(| #mapped_tags)* => {
-                        let __f = #opt_ty::deserialize(#tag, reader, s.attributes(), is_empty);
+                    _tag if #type_for_is_enum_check::__is_enum() && _tag == #field_tag_name.as_ref() => {
+                        let __f = <#opt_ty as ::xmlserde::XmlDeserialize>::deserialize(_tag, reader, s.attributes(), is_empty);
+                        #ident = Some(__f);
+                    }
+                    _tag if !(#type_for_is_enum_check::__is_enum()) && _tag == #field_tag_name.as_ref() => {
+                        let __f = <#opt_ty as ::xmlserde::XmlDeserialize>::deserialize(_tag, reader, s.attributes(), is_empty);
                         #ident = Some(__f);
                     }
                 }
             },
-            | Generic::Boxed(inner_ty) => {
-                quote! {
-                    #tag #(| #mapped_tags)* => {
-                        let __f = #inner_ty::deserialize(#tag, reader, s.attributes(), is_empty);
+            Generic::Boxed(ref inner_ty) => {
+                 quote! {
+                    _tag if #type_for_is_enum_check::__is_enum() && _tag == #field_tag_name.as_ref() => {
+                        let __f = <#inner_ty as ::xmlserde::XmlDeserialize>::deserialize(_tag, reader, s.attributes(), is_empty);
+                        #ident = Some(Box::new(__f));
+                    }
+                    _tag if !(#type_for_is_enum_check::__is_enum()) && _tag == #field_tag_name.as_ref() => {
+                        let __f = <#inner_ty as ::xmlserde::XmlDeserialize>::deserialize(_tag, reader, s.attributes(), is_empty);
                         #ident = Some(Box::new(__f));
                     }
                 }
             },
-            | Generic::None => {
-                let tt = if f.is_required() {
-                    quote! {
-                        #ident = Some(__f);
-                    }
+            Generic::None => {
+                let assignment = if f.default.is_some() {
+                    quote! { #ident = __f; }
                 } else {
-                    quote! {
-                        #ident = __f;
-                    }
+                    quote! { #ident = Some(__f); }
                 };
                 quote! {
-                    #tag #(| #mapped_tags)* => {
-                        let __f = #t::deserialize(#tag, reader, s.attributes(), is_empty);
-                        #tt
+                     _tag if #type_for_is_enum_check::__is_enum() && _tag == #field_tag_name.as_ref() => {
+                        let __f = <#t as ::xmlserde::XmlDeserialize>::deserialize(_tag, reader, s.attributes(), is_empty);
+                        #assignment
+                    }
+                    _tag if !(#type_for_is_enum_check::__is_enum()) && _tag == #field_tag_name.as_ref() => {
+                        let __f = <#t as ::xmlserde::XmlDeserialize>::deserialize(_tag, reader, s.attributes(), is_empty);
+                        #assignment
                     }
                 }
             },
@@ -948,11 +1003,11 @@ fn children_match_branch(
     let untagged_enums_branches = untag_enums_match_branch(untagged_enums);
     let untagged_structs_branches = untag_structs_match_branch(untagged_structs);
     let untag_text_enum = untag_text_enum_branches(untagged_enums);
-
     quote! {
         Ok(Event::Empty(s)) => {
             let is_empty = true;
-            match s.name().into_inner() {
+            let current_tag = s.name().into_inner();
+            match current_tag {
                 #(#branches)*
                 #untagged_enums_branches
                 #untagged_structs_branches
@@ -961,8 +1016,9 @@ fn children_match_branch(
         }
         Ok(Event::Start(s)) => {
             let is_empty = false;
-            match s.name().into_inner() {
-                #(#branches)*
+            let current_tag = s.name().into_inner();
+            match current_tag {
+                #(#branches)* // branches are the if _tag == ... constructs
                 #untagged_enums_branches
                 #untagged_structs_branches
                 _ => {},
@@ -973,6 +1029,25 @@ fn children_match_branch(
             let _str = t.unescape().expect("failed to unescape string");
             if _str.trim() != "" {
                 #untag_text_enum
+            }
+        }
+    }
+}
+
+fn rename_all(container: &Container) -> proc_macro2::TokenStream {
+    if let Some(rename_all) = &container.rename_all {
+        let case = parse_case(rename_all).expect("Invalid case for rename_all");
+        let case_str = case.to_rename_all_variant();
+        let case_ident = format_ident!("{}", case_str);
+        quote! {
+            fn rename_all() -> ::xmlserde::xmlserde_shared::Case {
+                ::xmlserde::xmlserde_shared::Case::#case_ident
+            }
+        }
+    } else {
+        quote! {
+            fn rename_all() -> ::xmlserde::xmlserde_shared::Case {
+                ::xmlserde::xmlserde_shared::Case::None
             }
         }
     }

@@ -1,0 +1,9 @@
+[package]
+name = "xmlserde_shared"
+version = "0.10.0"
+edition = "2021"
+description = "Shared types for xmlserde"
+license = "MIT"
+
+[dependencies]
+heck = "0.5"

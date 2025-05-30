@@ -1259,8 +1259,7 @@ mod tests {
     #[test]
     fn test_nested_struct_rename_all() {
         #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
-        #[xmlserde(root = b"person")]
-        #[xmlserde(rename_all = "snake_case")]
+        #[xmlserde(root = b"person", rename_all = "snake_case")]
         struct Person {
             #[xmlserde(ty = "attr")]
             first_name: String,
@@ -1296,11 +1295,179 @@ mod tests {
         assert_eq!(person.address.street_name, "Main Street");
         assert_eq!(person.address.house_number, 123);
 
+        // Test deserialization with case-sensitive root name
+        let xml = r#"<Person first_name="John"><address streetName="Main Street2" houseNumber="123"/></Person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.address.street_name, "Main Street2");
+        assert_eq!(person.address.house_number, 123);
+
         // Test case-insensitive deserialization
         let xml = r#"<person First_Name="John"><address StreetName="Main Street" HouseNumber="123"/></person>"#;
         let person = xml_deserialize_from_str::<Person>(xml).unwrap();
         assert_eq!(person.first_name, "John");
         assert_eq!(person.address.street_name, "Main Street");
         assert_eq!(person.address.house_number, 123);
+    }
+
+    #[test]
+    fn test_rename_all_root_case_insensitive() {
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = b"person")]
+        #[xmlserde(rename_all = "camelCase")]
+        struct Person {
+            #[xmlserde(ty = "attr")]
+            first_name: String,
+            #[xmlserde(ty = "attr")]
+            last_name: String,
+        }
+
+        // Test deserialization with different case variations of the root element
+        let xml = r#"<Person firstName="John" lastName="Doe"></Person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.last_name, "Doe");
+
+        let xml = r#"<PERSON firstName="John" lastName="Doe"></PERSON>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.last_name, "Doe");
+
+        let xml = r#"<person firstName="John" lastName="Doe"></person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.first_name, "John");
+        assert_eq!(person.last_name, "Doe");
+
+        // Test serialization - should use the canonical name (first mapped name)
+        let person = Person {
+            first_name: "John".to_string(),
+            last_name: "Doe".to_string(),
+        };
+        let xml = xml_serialize(person);
+        assert!(xml.contains("person"));
+        assert!(xml.contains("firstName=\"John\""));
+        assert!(xml.contains("lastName=\"Doe\""));
+    }
+
+    #[test]
+    fn test_multiple_roots() {
+        #[derive(XmlDeserialize, XmlSerialize, Debug, PartialEq)]
+        #[xmlserde(root = [b"person", b"employee"])]
+        struct Person {
+            #[xmlserde(name = b"age", ty = "attr")]
+            age: u16,
+            #[xmlserde(name = b"name", ty = "text")]
+            name: String,
+        }
+
+        // Test deserialization with first root
+        let xml = r#"<person age="25">John</person>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.age, 25);
+        assert_eq!(person.name, "John");
+
+        // Test deserialization with second root
+        let xml = r#"<employee age="30">Jane</employee>"#;
+        let person = xml_deserialize_from_str::<Person>(xml).unwrap();
+        assert_eq!(person.age, 30);
+        assert_eq!(person.name, "Jane");
+
+        // Test serialization (should use first root)
+        let person = Person {
+            age: 25,
+            name: "John".to_string(),
+        };
+        let xml = xml_serialize(person);
+        assert_eq!(xml, "<person age=\"25\">John</person>");
+    }
+
+    #[derive(XmlDeserialize, Debug, Clone, XmlSerialize)]
+    #[xmlserde(root = b"BirdObservation")]
+    pub struct BirdObservation {
+        #[xmlserde(name = b"Species", ty = "attr")]
+        pub species: String,
+        #[xmlserde(name = b"Mood", ty = "attr")]
+        pub mood: String,
+        #[xmlserde(name = b"Notes", ty = "attr")]
+        pub notes: String,
+        #[xmlserde(name = b"ObservationTime", ty = "attr")]
+        pub observation_time: String,
+        #[xmlserde(name = b"Count", ty = "attr")]
+        pub count: i32,
+        #[xmlserde(name = b"NestDetails", ty = "child")]
+        pub nest_details: Option<NestDetails>,
+    }
+
+    #[derive(XmlDeserialize, Debug, Clone, XmlSerialize)]
+    pub enum NestDetails {
+        #[xmlserde(name = b"TreeNest")]
+        TreeNest(TreeNest),
+    }
+
+    #[derive(XmlDeserialize, Debug, Clone, XmlSerialize)]
+    pub struct TreeNest {
+        #[xmlserde(name = b"Species", ty = "attr")]
+        pub species: String,
+        #[xmlserde(name = b"Location", ty = "child")]
+        pub location: Location,
+        #[xmlserde(name = b"Observer", ty = "child")]
+        pub observer: Observer,
+    }
+
+    #[derive(XmlDeserialize, Debug, Clone, XmlSerialize)]
+    pub struct Location {
+        #[xmlserde(name = b"id", ty = "attr")]
+        pub id: i32,
+    }
+
+    #[derive(XmlDeserialize, Debug, Clone, XmlSerialize)]
+    pub struct Observer {
+        #[xmlserde(name = b"id", ty = "attr")]
+        pub id: i32,
+    }
+
+    #[test]
+    fn test_bird_observation() {
+        let xml = r#"<BirdObservation
+            Species="Robin"
+            Mood="Chirpy"
+            Notes="Singing a lovely song."
+            ObservationTime="2024-07-27T10:30:00"
+            Count="2"
+        >
+            <NestDetails>
+                <TreeNest Species="Robin">
+                    <Location id="12345" />
+                    <Observer id="98765" />
+                </TreeNest>
+            </NestDetails>
+        </BirdObservation>"#;
+
+        let result = xml_deserialize_from_str::<BirdObservation>(xml);
+        match result {
+            | Ok(observation) => {
+                println!("Deserialized observation: {:#?}", observation);
+                assert_eq!(observation.species, "Robin");
+                assert_eq!(observation.mood, "Chirpy");
+                assert_eq!(observation.notes, "Singing a lovely song.");
+                assert_eq!(observation.observation_time, "2024-07-27T10:30:00");
+                assert_eq!(observation.count, 2);
+                // Debug output for nest_details
+                println!("Nest details: {:?}", observation.nest_details);
+                // Verify NestDetails
+                let nest_details = observation.nest_details.unwrap();
+                match nest_details {
+                    | NestDetails::TreeNest(nest) => {
+                        assert_eq!(nest.species, "Robin");
+                        assert_eq!(nest.location.id, 12345);
+                        assert_eq!(nest.observer.id, 98765);
+                    },
+                }
+            },
+            | Err(e) => {
+                println!("Deserialization error: {}", e);
+                panic!("Deserialization failed");
+            },
+        }
     }
 }

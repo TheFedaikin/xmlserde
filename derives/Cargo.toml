@@ -1,7 +1,7 @@
 [package]
 name = "xmlserde_derives"
 version = "0.10.2"
-description = "macros that help xmlserde serde the xml files"
+description = "Derive macros for xmlserde"
 authors = ["ImJeremyHe<yiliang.he@qq.com>"]
 license = "MIT"
 edition = "2018"
@@ -11,7 +11,7 @@ repository = "https://github.com/ImJeremyHe/xmlserde"
 proc-macro = true
 
 [dependencies]
-syn = { version = "2.0.101", features = ["full"] }
-quote = "1"
-proc-macro2 = "1.0.75"
-heck = "0.5"
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+xmlserde_shared = { path = "../xmlserde_shared", version = "0.10.0" }

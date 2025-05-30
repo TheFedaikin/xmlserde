@@ -106,11 +106,13 @@ use std::{
 // their own.
 pub use quick_xml;
 use quick_xml::events::Event;
+pub use xmlserde_shared;
+use xmlserde_shared::Case;
 
 pub trait XmlSerialize {
     fn serialize<W: Write>(&self, tag: &[u8], writer: &mut quick_xml::Writer<W>);
-    fn ser_root() -> Option<&'static [u8]> {
-        None
+    fn ser_roots() -> Vec<&'static [u8]> {
+        vec![]
     }
 }
 
@@ -138,8 +140,12 @@ pub trait XmlDeserialize: Sized {
         is_empty: bool,
     ) -> Self;
 
-    fn de_root() -> Option<&'static [u8]> {
-        None
+    fn de_roots() -> Vec<&'static [u8]> {
+        vec![]
+    }
+
+    fn rename_all() -> Case {
+        Case::None
     }
 
     /// A helper function used when ty = `untag`. It could help
@@ -291,10 +297,11 @@ where
     let mut writer = quick_xml::Writer::new(Vec::new());
     let decl = BytesDecl::new("1.0", Some("UTF-8"), Some("yes"));
     let _ = writer.write_event(Event::Decl(decl));
-    obj.serialize(
-        T::ser_root().expect(r#"Expect a root element to serialize: #[xmlserde(root=b"tag")]"#),
-        &mut writer,
-    );
+    let roots = T::ser_roots();
+    if roots.is_empty() {
+        panic!(r#"Expect a root element to serialize: #[xmlserde(root=b"tag")]"#);
+    }
+    obj.serialize(roots[0], &mut writer);
     String::from_utf8(writer.into_inner()).unwrap()
 }
 
@@ -305,7 +312,11 @@ where
     T: XmlSerialize,
 {
     let mut writer = quick_xml::Writer::new(Vec::new());
-    obj.serialize(T::ser_root().expect("Expect root"), &mut writer);
+    let roots = T::ser_roots();
+    if roots.is_empty() {
+        panic!("Expect at least one root element");
+    }
+    obj.serialize(roots[0], &mut writer);
     String::from_utf8(writer.into_inner()).expect("decode error")
 }
 
@@ -322,13 +333,27 @@ where
 ///     pub pets: Vec<Pet>,
 /// }
 /// ```
-pub fn xml_deserialize_from_reader<T, R>(reader: R) -> Result<T, String>
+pub fn xml_deserialize_from_reader<T, R>(mut reader: R) -> Result<T, String>
 where
     T: XmlDeserialize,
     R: BufRead,
 {
-    let root = T::de_root().expect(r#"#[xmlserde(root = b"tag")]"#);
-    xml_deserialize_from_reader_with_root(reader, root)
+    let roots = T::de_roots();
+    if roots.is_empty() {
+        return Err(r#"#[xmlserde(root = b"tag")]"#.to_string());
+    }
+    // Read the entire input into a buffer
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    let mut last_err = None;
+    for root in &roots {
+        let mut cursor = std::io::Cursor::new(&buf);
+        match xml_deserialize_from_reader_with_root(&mut cursor, root) {
+            | Ok(val) => return Ok(val),
+            | Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "No matching root found".to_string()))
 }
 
 pub(crate) fn xml_deserialize_from_reader_with_root<T, R>(
@@ -341,16 +366,23 @@ where
 {
     let mut reader = quick_xml::Reader::from_reader(reader);
     let mut buf = Vec::<u8>::new();
+    let rename_all = T::rename_all();
+    let transformed_root = rename_all.transform(root);
+
     loop {
         match reader.read_event_into(&mut buf) {
             | Ok(Event::Start(start)) => {
-                if start.name().into_inner() == root {
+                let name = start.name().into_inner();
+                let transformed_name = rename_all.transform(name);
+                if transformed_name == transformed_root {
                     let result = T::deserialize(root, &mut reader, start.attributes(), false);
                     return Ok(result);
                 }
             },
             | Ok(Event::Empty(start)) => {
-                if start.name().into_inner() == root {
+                let name = start.name().into_inner();
+                let transformed_name = rename_all.transform(name);
+                if transformed_name == transformed_root {
                     let result = T::deserialize(root, &mut reader, start.attributes(), true);
                     return Ok(result);
                 }
@@ -358,7 +390,7 @@ where
             | Ok(Event::Eof) => {
                 return Err(format!(
                     "Cannot find the element: {}",
-                    String::from_utf8(root.to_vec()).unwrap()
+                    String::from_utf8_lossy(root)
                 ))
             },
             | Err(e) => return Err(e.to_string()),

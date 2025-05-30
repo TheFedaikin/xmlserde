@@ -11,6 +11,8 @@ readme = "README.md"
 
 [dependencies]
 quick-xml = { version = "0.37", features = ["serialize"] }
+heck = "0.5"
+xmlserde_shared = { path = "./xmlserde_shared", version = "0.10.0" }
 
 [dev-dependencies]
 xmlserde_derives = { path = "./derives", version = "0.10.2" }

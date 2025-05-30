@@ -124,10 +124,10 @@ pub fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStre
     let init = init_is_empty(&children, &self_closed_children, &untags, &text);
     let build_attr_and_push = attrs.iter().map(|attr| {
         let name = container
-            .get_field_name(&attr)
+            .get_field_name(attr)
             .or_else(|| {
                 // Try to use rename_all if possible
-                container.get_field_name(&attr)
+                container.get_field_name(attr)
             })
             .unwrap_or_else(|| {
                 let ident = attr
@@ -310,10 +310,11 @@ pub fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStre
             writer.write_event(Event::End(end));
         }
     };
-    let get_root = if let Some(r) = &container.root {
+    let get_roots = if !container.roots.is_empty() {
+        let roots = container.get_root_names();
         quote! {
-            fn ser_root() -> Option<&'static [u8]> {
-                Some(#r)
+            fn ser_roots() -> Vec<&'static [u8]> {
+                vec![#(#roots),*]
             }
         }
     } else {
@@ -340,7 +341,7 @@ pub fn get_ser_struct_impl_block(container: Container) -> proc_macro2::TokenStre
                 #init
                 #write_event
             }
-            #get_root
+            #get_roots
         }
     }
 }

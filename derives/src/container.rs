@@ -3,9 +3,10 @@ use syn::parse::{self, Parse};
 use syn::punctuated::Punctuated;
 use syn::token::Comma;
 use syn::Meta::{self, NameValue};
-use syn::Variant;
+use syn::{Expr, ExprArray, ExprLit, Lit, Variant};
 
-use crate::case::{parse_case, Case};
+use crate::case::parse_case;
+
 use crate::symbol::{
     DEFAULT, DENY_UNKNOWN, MAP, NAME, RENAME_ALL, ROOT, SKIP_SERIALIZING, TYPE, TYPE_ATTR,
     TYPE_CHILD, TYPE_SFC, TYPE_TEXT, TYPE_UNTAG, TYPE_UNTAGGED_ENUM, TYPE_UNTAGGED_STRUCT,
@@ -46,7 +47,7 @@ pub struct Container<'a> {
     pub original: &'a syn::DeriveInput,
     pub with_ns: Option<syn::LitByteStr>,
     pub custom_ns: Vec<(syn::LitByteStr, syn::LitByteStr)>,
-    pub root: Option<syn::LitByteStr>,
+    pub roots: Vec<syn::LitByteStr>,
     pub deny_unknown: bool,
     pub rename_all: Option<syn::LitStr>,
 }
@@ -56,8 +57,32 @@ impl<'a> Container<'a> {
         !self.enum_variants.is_empty()
     }
 
+    pub fn get_root_names(&self) -> Vec<syn::LitByteStr> {
+        if self.roots.is_empty() {
+            return vec![];
+        }
+
+        // If rename_all is set, apply it to all root names
+        if let Some(rename_all) = &self.rename_all {
+            if let Some(case) = parse_case(rename_all) {
+                return self
+                    .roots
+                    .iter()
+                    .map(|root| {
+                        let root_value = root.value();
+                        let root_str = String::from_utf8_lossy(&root_value);
+                        let converted = case.convert(&root_str);
+                        syn::LitByteStr::new(converted.as_bytes(), root.span())
+                    })
+                    .collect();
+            }
+        }
+        // If no rename_all or invalid case, return original roots
+        self.roots.clone()
+    }
+
     pub fn validate(&self) -> Result<(), ContainerError> {
-        if self.root.is_some() && self.is_enum() {
+        if !self.roots.is_empty() && self.is_enum() {
             return Err(ContainerError::InvalidContainerAttributes(
                 "for clarity, enum should not have the root attribute. please use a struct to wrap the enum and set its type to untag".to_string()
             ));
@@ -82,11 +107,32 @@ impl<'a> Container<'a> {
         get_lit_byte_str(&m.value).ok().cloned()
     }
 
-    fn parse_root(meta: &syn::Meta) -> Option<syn::LitByteStr> {
-        if let NameValue(m) = meta {
-            if m.path == ROOT {
-                if let Ok(s) = get_lit_byte_str(&m.value) {
-                    return Some(s.clone());
+    fn parse_roots(meta_item: &syn::Meta) -> Option<Vec<syn::LitByteStr>> {
+        if let Meta::NameValue(nv) = meta_item {
+            if nv.path == ROOT {
+                match &nv.value {
+                    | Expr::Lit(ExprLit {
+                        lit: Lit::ByteStr(s),
+                        ..
+                    }) => {
+                        return Some(vec![s.clone()]);
+                    },
+                    | Expr::Array(ExprArray { elems, .. }) => {
+                        let mut roots = Vec::new();
+                        for elem in elems {
+                            if let Expr::Lit(ExprLit {
+                                lit: Lit::ByteStr(s),
+                                ..
+                            }) = elem
+                            {
+                                roots.push(s.clone());
+                            }
+                        }
+                        if !roots.is_empty() {
+                            return Some(roots);
+                        }
+                    },
+                    | _ => {},
                 }
             }
         }
@@ -121,7 +167,7 @@ impl<'a> Container<'a> {
     fn parse_container_attrs(item: &'a syn::DeriveInput) -> ContainerAttrs {
         let mut with_ns = None;
         let mut custom_ns = Vec::new();
-        let mut root = None;
+        let mut roots = Vec::new();
         let mut deny_unknown = false;
         let mut rename_all = None;
 
@@ -133,9 +179,12 @@ impl<'a> Container<'a> {
         {
             if let Some(ns) = Self::parse_with_ns(&meta_item) {
                 with_ns = Some(ns);
-            } else if let Some(r) = Self::parse_root(&meta_item) {
-                root = Some(r);
-            } else if let Meta::Path(p) = &meta_item {
+            }
+            // Always check for both root and roots
+            if let Some(r) = Self::parse_roots(&meta_item) {
+                roots.extend(r);
+            }
+            if let Meta::Path(p) = &meta_item {
                 if p == DENY_UNKNOWN {
                     deny_unknown = true;
                 }
@@ -149,7 +198,7 @@ impl<'a> Container<'a> {
         ContainerAttrs {
             with_ns,
             custom_ns,
-            root,
+            roots,
             deny_unknown,
             rename_all,
         }
@@ -174,13 +223,13 @@ impl<'a> Container<'a> {
                     original: item,
                     with_ns: attrs.with_ns,
                     custom_ns: attrs.custom_ns,
-                    root: attrs.root,
+                    roots: attrs.roots,
                     deny_unknown: attrs.deny_unknown,
                     rename_all: attrs.rename_all,
                 })
             },
-            | syn::Data::Enum(e) => {
-                let variants = e
+            | syn::Data::Enum(de) => {
+                let variants = de
                     .variants
                     .iter()
                     .map(EnumVariant::from_ast)
@@ -191,7 +240,7 @@ impl<'a> Container<'a> {
                     original: item,
                     with_ns: attrs.with_ns,
                     custom_ns: attrs.custom_ns,
-                    root: attrs.root,
+                    roots: attrs.roots,
                     deny_unknown: attrs.deny_unknown,
                     rename_all: attrs.rename_all,
                 })
@@ -222,9 +271,6 @@ impl<'a> Container<'a> {
                         converted.as_bytes(),
                         rename_all.span(),
                     ));
-                } else {
-                    // No ident for this field, cannot apply rename_all
-                    return None;
                 }
             }
         }
@@ -742,7 +788,7 @@ impl Generic<'_> {
 pub struct ContainerAttrs {
     pub with_ns: Option<syn::LitByteStr>,
     pub custom_ns: Vec<(syn::LitByteStr, syn::LitByteStr)>,
-    pub root: Option<syn::LitByteStr>,
+    pub roots: Vec<syn::LitByteStr>,
     pub deny_unknown: bool,
     pub rename_all: Option<syn::LitStr>,
 }
