@@ -923,7 +923,7 @@ mod tests {
             Cat,
             #[xmlserde(rename = "dog")]
             Dog,
-            #[xmlserde(map = ["parrot", "pigeon"])]
+            #[xmlserde(map = ["Bird", "parrot", "pigeon"])]
             Bird,
             #[xmlserde(other)]
             Other(String),
@@ -1469,5 +1469,50 @@ mod tests {
                 panic!("Deserialization failed");
             },
         }
+    }
+
+    #[test]
+    fn test_birds_enum() {
+        #[derive(XmlDeserialize, Debug, Clone, XmlSerialize, PartialEq)]
+        #[xmlserde(root = b"BirdObservation")]
+        pub struct BirdObservation {
+            #[xmlserde(name = b"Mood", ty = "attr")]
+            pub mood: String,
+            #[xmlserde(ty = "attr", name = b"Species")]
+            pub species: Species,
+        }
+
+        #[derive(Debug, Clone, XmlSerdeEnum, PartialEq)]
+        pub enum Species {
+            #[xmlserde(map = ["robin", "Robin"])]
+            Robin,
+            #[xmlserde(map = ["sparrow"])]
+            Sparrow,
+            #[xmlserde(map = ["eagle"])]
+            Eagle,
+            #[xmlserde(map = ["owl"])]
+            Owl,
+        }
+
+        let xml = r#"<BirdObservation Mood="Chirpy" Species="Robin"></BirdObservation>"#;
+        let result = xml_deserialize_from_str::<BirdObservation>(xml);
+        match result {
+            | Ok(observation) => {
+                println!("Deserialized observation: {:#?}", observation);
+                assert_eq!(observation.mood, "Chirpy");
+                assert_eq!(observation.species, Species::Robin);
+            },
+            | Err(e) => {
+                println!("Deserialization error: {}", e);
+                panic!("Deserialization failed");
+            },
+        }
+
+        let observation = BirdObservation {
+            mood: "Chirpy".to_string(),
+            species: Species::Robin,
+        };
+        let xml = xml_serialize(observation);
+        assert_eq!(xml, r#"<BirdObservation Mood="Chirpy" Species="robin"/>"#);
     }
 }

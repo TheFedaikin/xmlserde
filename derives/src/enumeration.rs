@@ -91,6 +91,12 @@ pub fn get_xml_serde_enum_impl_block(input: DeriveInput) -> Result<TokenStream, 
                 Self::#ident(s) => s.clone(),
             });
         } else {
+            // Use first mapped value if available, otherwise use variant name
+            let xml_value = if !variant.mapped_values.is_empty() {
+                &variant.mapped_values[0]
+            } else {
+                &variant.xml_value
+            };
             serialize_arms.push(quote! {
                 Self::#ident => #xml_value.to_string(),
             });
